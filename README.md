@@ -11,7 +11,7 @@ Folder Structure
 This project follows a structured organization to ensure ease of experimentation and reproducibility. The key directories are:
 
 ```plaintext
-deCIFer/
+decifer/
 │
 ├── data/
 │   ├── chili100k/                    # CHILI-100K dataset files
