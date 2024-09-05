@@ -103,8 +103,8 @@ python scripts/xrd_simulation.py
 ### Phase 1: Unconditioned Model Training
 * Objective: Train a transformer model without any conditioning data.
 * Files:
-	models/deCIFer_unconditioned.py
-	experiments/unconditioned/
+	- models/deCIFer_unconditioned.py
+	- experiments/unconditioned/
 * Script: Use train_model.py to train the unconditioned model:
 ```bash
 python scripts/train_model.py --model unconditioned
@@ -113,8 +113,8 @@ python scripts/train_model.py --model unconditioned
 ### Phase 2: Prefix-Based Conditioning
 * Objective: Train a model using Bragg-peak XRD data as a prefix to condition the generation process.
 * Files:
-	models/deCIFer_prefix_conditioned.py
-	experiments/prefix_conditioning/
+	- models/deCIFer_prefix_conditioned.py
+	- experiments/prefix_conditioning/
 
 * Script: Train the prefix-conditioned model:
 ```bash
@@ -124,8 +124,8 @@ python scripts/train_model.py --model prefix_conditioned
 ### Phase 3: Encoded XRD Conditioning
 * Objective: Encode XRD data into the model and use it as a conditioning mechanism.
 * Files:
-	models/deCIFer_encoded_conditioned.py
-	experiments/encoded_conditioning/
+	- models/deCIFer_encoded_conditioned.py
+	- experiments/encoded_conditioning/
 
 * Script: Train the encoded-conditioned model:
 ```bash
