@@ -19,11 +19,42 @@ from decifer import (
     Tokenizer,
     replace_symmetry_loop,
     remove_cif_header,
+    remove_oxidation_loop,
+    format_occupancies,
+    extract_formula_units,
+    replace_data_formula_with_nonreduced_formula,
+    round_numbers,
 )
 
 import warnings
 warnings.filterwarnings("ignore")
 
+import json
+
+def save_metadata(metadata, data_dir):
+    """
+    Save metadata information (sizes, shapes, argument parameters, vocab size, etc.) into a centralized JSON file.
+
+    Args:
+        metadata (dict): Dictionary containing metadata information.
+        data_dir (str): Directory where the metadata file should be saved.
+    """
+    metadata_file = os.path.join(data_dir, "metadata.json")
+    
+    # If the metadata file already exists, load the existing metadata and update it
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as f:
+            existing_metadata = json.load(f)
+        # Update existing metadata with new data
+        existing_metadata.update(metadata)
+        metadata = existing_metadata
+    
+    # Save updated metadata to the JSON file
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=4)
+    
+    print(f"Centralized metadata saved to {metadata_file}")
+    
 def create_stratification_key(pmg_structure, group_size):
     """
     Create a stratification key from the spacegroup.
@@ -50,16 +81,24 @@ def process_single_cif(args):
         args (tuple): Contains (path, spacegroup_group_size, debug).
             path (str): Path to the CIF file.
             spacegroup_group_size (int): Spacegroup bin size for stratification.
+            decimal_places (int): Number of decimal places to be enforced in floats in CIF file.
+            remove_occ_less_than_one (bool): If True, structures with occupancy less than 1.0 will be removed.
             debug (bool): If True, print errors for failed CIF processing.
 
     Returns:
         tuple: (strat_key, cif_content) if processing is successful, else None.
     """
-    path, spacegroup_group_size, debug = args
+    path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug = args
     name = os.path.basename(path)
     try:
         # Make structure
         struct = Structure.from_file(path)
+        
+        # Option for removing structures with occupancies below 1
+        if remove_occ_less_than_one:
+            for site in structure:
+                if any(occ < 1 for occ in site.species_and_occu.values()):
+                    raise Exception()
 
         # Get stratification key
         strat_key = create_stratification_key(struct, spacegroup_group_size)
@@ -67,13 +106,26 @@ def process_single_cif(args):
         # Get raw content of CIF in string
         cif_content = CifWriter(struct=struct, symprec=0.1).__str__()
 
+        # Extract formula units and remove if Z=0
+        formula_units = extract_formula_units(cif_content)
+        if formula_units == 0:
+            raise Exception()
+
+        # Remove oxidation state information
+        cif_content = remove_oxidation_loop(cif_content)
+
+        # Number precision rounding
+        cif_content = round_numbers(cif_content, decimal_places)
+        cif_content = format_occupancies(cif_content, decimal_places)
+
         return (name, strat_key, cif_content)
     except Exception as e:
         if debug:
+            #raise e
             print(f"Error processing {path}: {e}")
         return None
 
-def preprocess(data_dir, seed, spacegroup_group_size, debug_max=None, debug=False):
+def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_occ_less_than_one=False, debug_max=None, debug=False):
     """
     Preprocess CIF files by extracting their structure and creating a train/val/test split.
 
@@ -81,6 +133,8 @@ def preprocess(data_dir, seed, spacegroup_group_size, debug_max=None, debug=Fals
         data_dir (str): Directory containing the raw CIF files.
         seed (int): Random seed for reproducibility.
         spacegroup_group_size (int): Group size for spacegroup stratification.
+        decimal_places (int): Number of decimal places to be enforced in floats in CIF file.
+        remove_occ_less_than_one (bool): If True, structures with occupancy less than 1.0 will be removed.
         debug_max (int, optional): Maximum number of CIFs to process (for debugging).
         debug (bool, optional): If True, print debugging information.
 
@@ -98,7 +152,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, debug_max=None, debug=Fals
     os.makedirs(output_dir, exist_ok=True)
 
     # Prepare arguments for parallel processing
-    tasks = [(path, spacegroup_group_size, debug) for path in cif_paths]
+    tasks = [(path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug) for path in cif_paths]
 
     # Parallel processing of CIF files using multiprocessing
     num_workers = min(cpu_count(), len(cif_paths))  # Use available CPU cores, limited to number of files
@@ -140,6 +194,20 @@ def preprocess(data_dir, seed, spacegroup_group_size, debug_max=None, debug=Fals
             pickle.dump(data, pkl)
         print("DONE.")
     print()
+
+    # Centralized metadata for preprocessing
+    metadata = {
+        "train_size": train_size,
+        "val_size": val_size,
+        "test_size": test_size,
+        "total_files_processed": len(cif_paths),
+        "total_valid_files": len(cif_contents),
+        "decimal_places": decimal_places,
+        "remove_occ_less_than_one": remove_occ_less_than_one,
+        "seed": seed,
+        "spacegroup_group_size": spacegroup_group_size
+    }
+    save_metadata(metadata, data_dir)
 
 def generate_single_xrd(args):
 
@@ -249,6 +317,20 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
         print("DONE.")
     print()
 
+    # Initialize metadata for XRD calculation
+    metadata = {
+        "xrd_parameters": {
+            "wavelength": wavelength,
+            "qmin": qmin,
+            "qmax": qmax,
+            "qstep": qstep,
+            "fwhm": fwhm,
+            "snr": snr
+        },
+    }
+    # Save XRD metadata to centralized file
+    save_metadata(metadata, data_dir)
+
 def tokenize_single_datum(args):
     
     # Extract arguments
@@ -319,6 +401,14 @@ def tokenize_datasets(data_dir, debug_max=None, debug=False):
         print("DONE.")
     print()
 
+    # Initialize metadata for tokenization
+    metadata = {
+        "vocab_size": Tokenizer().vocab_size
+    }    
+
+    # Save tokenization metadata to centralized file
+    save_metadata(metadata, data_dir)
+
 def convert_pkl_to_hdf5(data_dir):
     '''
     Converts the pkl.gz dataset files to HDF5 file format.
@@ -374,6 +464,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--data_dir", type=str, help="Path to the outer data directory", required=True)
     parser.add_argument("--group_size", type=int, help="Spacegroup group size for stratification", default=10)
+    parser.add_argument("--decimal_places", type=int, help="Number of decimal places for floats in CIF files", default=4)
+    parser.add_argument("--remove_occ", help="Remove structures with occupancies less than one", action="store_true")
 
     parser.add_argument("--preprocess", help="preprocess files", action="store_true")
     parser.add_argument("--calc_xrd", help="calculate XRD", action="store_true")  # Placeholder for future implementation
@@ -390,7 +482,7 @@ if __name__ == "__main__":
         args.debug_max = None
 
     if args.preprocess:
-        preprocess(args.data_dir, args.seed, args.group_size, args.debug_max, args.debug)
+        preprocess(args.data_dir, args.seed, args.group_size, args.decimal_places, args.remove_occ, args.debug_max, args.debug)
         print(f"Prepared CIF files have been saved to {os.path.join(args.data_dir, 'preprocessed')}")
         print()
 
@@ -406,3 +498,11 @@ if __name__ == "__main__":
     
     if args.serialize:
         convert_pkl_to_hdf5(args.data_dir)
+
+    # Store all arguments passed to the main function in centralized metadata
+    metadata = {
+        "arguments": vars(args)
+    }
+
+    # Finalize metadata saving after all processing steps
+    save_metadata(metadata, args.data_dir)

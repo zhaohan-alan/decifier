@@ -85,6 +85,9 @@ class Tokenizer:
         for sg in space_groups_sg:
             self._id_to_token[self.token_to_id[sg]] = sg.replace("_sg", "")
 
+        # Vocab size
+        self.vocab_size = len(self._tokens_with_unk_pad)
+
     @staticmethod
     def atoms():
         return ATOMS
