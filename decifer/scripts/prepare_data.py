@@ -224,8 +224,13 @@ def generate_single_xrd(args):
             print(f"Error processing {path}: {e}")
         return None
 
-    # Init calculator object
-    xrd_calc = XRDCalculator(wavelength=wavelength)
+    try:
+        # Init calculator object
+        xrd_calc = XRDCalculator(wavelength=wavelength)
+    except Exception as e:
+        if debug:
+            print(f"Error processing {path}: {e}")
+        return None
 
     # Get XRD pattern
     xrd_pattern = xrd_calc.get_pattern(struct)
@@ -324,6 +329,7 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
             "qmin": qmin,
             "qmax": qmax,
             "qstep": qstep,
+            "qgrid_len": int((qmax - qmin) / qstep),
             "fwhm": fwhm,
             "snr": snr
         },
