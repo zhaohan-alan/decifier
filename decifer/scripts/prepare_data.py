@@ -9,11 +9,16 @@ from pymatgen.analysis.diffraction.xrd import XRDCalculator
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from glob import glob
+import multiprocessing as mp
 from multiprocessing import Pool, cpu_count
 import numpy as np
 
 import h5py
 import gzip
+import json
+
+import logging
+from logging import handlers
 
 from decifer import (
     Tokenizer,
@@ -29,7 +34,39 @@ from decifer import (
 import warnings
 warnings.filterwarnings("ignore")
 
-import json
+def init_worker(log_queue):
+    """
+    Initializes each worker process with a queue-based logger.
+    This will be called when each worker starts.
+    """
+    queue_handler = handlers.QueueHandler(log_queue)
+    logger = logging.getLogger()
+    logger.addHandler(queue_handler)
+    logger.setLevel(logging.ERROR)
+
+def log_listener(queue, log_dir):
+    """
+    Function excecuted by the log listener process.
+    Receives messages from the queue and writes them to the log file.
+    Rotates the log file based on size.
+    """
+    # Setup file handler (rotating)
+    log_file = os.path.join("./" + log_dir, "error.log")
+    handler = handlers.RotatingFileHandler(
+        log_file, maxBytes=1024*1024, backupCount=5,
+    )
+    handler.setLevel(logging.ERROR)
+
+    # Add a formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+
+    # Set up the log listener
+    listener = handlers.QueueListener(queue, handler)
+    listener.start()
+
+    # return listener
+    return listener
 
 def save_metadata(metadata, data_dir):
     """
@@ -52,8 +89,6 @@ def save_metadata(metadata, data_dir):
     # Save updated metadata to the JSON file
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=4)
-    
-    print(f"Centralized metadata saved to {metadata_file}")
     
 def create_stratification_key(pmg_structure, group_size):
     """
@@ -89,6 +124,7 @@ def process_single_cif(args):
         tuple: (strat_key, cif_content) if processing is successful, else None.
     """
     path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug = args
+    logger = logging.getLogger()
     name = os.path.basename(path)
     try:
         # Make structure
@@ -123,6 +159,9 @@ def process_single_cif(args):
         if debug:
             #raise e
             print(f"Error processing {path}: {e}")
+
+        logger.exception(f"Exception in worker function pre-processing CIF with path {path}, with error:\n {e}\n\n")
+
         return None
 
 def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_occ_less_than_one=False, debug_max=None, debug=False):
@@ -143,29 +182,40 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     """
 
     # Find raw CIF files
-    raw_dir = os.path.join(data_dir, "raw")
+    raw_dir = os.path.join("/".join(data_dir.split("/")[:-1]), "raw")
     cif_paths = sorted(glob(os.path.join(raw_dir, "*.cif")))[:debug_max]
     assert len(cif_paths) > 0, f"Cannot find any .cif files in {raw_dir}"
 
     # Output directory
-    output_dir = os.path.join(data_dir, "preprocessed")
-    os.makedirs(output_dir, exist_ok=True)
+    pre_dir = os.path.join(data_dir, "preprocessed")
+    os.makedirs(pre_dir, exist_ok=True)
 
     # Prepare arguments for parallel processing
     tasks = [(path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug) for path in cif_paths]
+    
+    # Create a queue for logging and start the logging process
+    log_queue = mp.Queue()
+    listener = log_listener(log_queue, pre_dir)
 
     # Parallel processing of CIF files using multiprocessing
     num_workers = min(cpu_count(), len(cif_paths))  # Use available CPU cores, limited to number of files
-    with Pool(processes=num_workers) as pool:
+    with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
         results = list(tqdm(pool.imap_unordered(
             process_single_cif, tasks
-        ), total=len(cif_paths), desc="preprocessing CIFs..."))
+        ), total=len(cif_paths), desc="Preprocessing CIFs...", leave=False))
+        
+    # Stop log listener and flush
+    listener.stop()
+    logging.shutdown()
 
     # Filter out None results from failed processing
     valid_results = [result for result in results if result is not None]
     names, strat_keys, cif_contents = zip(*valid_results)
 
-    print(f"No. CIFs before preprocessing: {len(cif_paths)} --> after: {len(cif_contents)}\n")
+    print("-"*20)
+    print("PRE-PROCESSING")
+    print("-"*20)
+    print(f"Reduction in dataset: {len(cif_paths)} samples --> {len(cif_contents)} samples")
 
     # Create data splits
     train_size = int(0.8 * len(cif_contents))
@@ -173,7 +223,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     test_size = len(cif_contents) - train_size - val_size
     print("Train size:", train_size)
     print("Val size:", val_size)
-    print("Test size:", test_size, "\n")
+    print("Test size:", test_size)
 
     # Split data using stratification
     train_data, test_data, train_names, test_names = train_test_split(
@@ -190,10 +240,9 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     # Save the train/val/test data splits
     for data, prefix in zip([train, val, test], ["train", "val", "test"]):
         print(f"Saving {prefix} dataset...", end="")
-        with gzip.open(os.path.join(output_dir, f"{prefix}_dataset.pkl.gz"), "wb") as pkl:
+        with gzip.open(os.path.join(pre_dir, f"{prefix}_dataset.pkl.gz"), "wb") as pkl:
             pickle.dump(data, pkl)
         print("DONE.")
-    print()
 
     # Centralized metadata for preprocessing
     metadata = {
@@ -208,11 +257,15 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
         "spacegroup_group_size": spacegroup_group_size
     }
     save_metadata(metadata, data_dir)
+        
+    print(f"Prepared CIF files have been saved to {pre_dir}")
+    print()
 
 def generate_single_xrd(args):
 
     # Extract arguments
     name, cif_content, wavelength, qmin, qmax, qstep, fwhm, snr, debug = args
+    logger = logging.getLogger()
     
     # Generate structure from cif_content
     try:
@@ -221,19 +274,22 @@ def generate_single_xrd(args):
         struct = CifParser.from_string(cif_content).get_structures()[0]
     except Exception as e:
         if debug:
-            print(f"Error processing {path}: {e}")
+            print(f"Error processing {name}: {e}")
+        logger.exception(f"Exception in worker function with CifParser for CIF with name {name}, with error:\n {e}\n\n")
         return None
 
     try:
         # Init calculator object
         xrd_calc = XRDCalculator(wavelength=wavelength)
+
+        # Get XRD pattern
+        xrd_pattern = xrd_calc.get_pattern(struct)
+
     except Exception as e:
         if debug:
-            print(f"Error processing {path}: {e}")
+            print(f"Error processing {name}: {e}")
+        logger.exception(f"Exception in worker function with xrd calculation for CIF with name {name}, with error:\n {e}\n\n")
         return None
-
-    # Get XRD pattern
-    xrd_pattern = xrd_calc.get_pattern(struct)
 
     # Convert to Q
     theta = np.radians(xrd_pattern.x / 2)
@@ -287,8 +343,12 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
     assert len(datasets) > 0, f"Cannot find any preprocessed files in {preprocessed_dir}"
 
     # Make sure that there is an output
-    xrd_dir = os.path.join(data_dir, "xrd_data")
+    xrd_dir = os.path.join(data_dir, "xrd")
     os.makedirs(xrd_dir, exist_ok=True)
+        
+    print("-"*20)
+    print("XRD CALCULATION")
+    print("-"*20)
 
     for dataset_path in datasets:
         dataset_name = dataset_path.split("/")[-1].split(".")[0].split("_")[0]
@@ -302,17 +362,25 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
 
         # Prepare arguments for parallel processing
         tasks = [(name, cif_content, wavelength, qmin, qmax, qstep, fwhm, snr, debug) for (name, cif_content) in data]
+    
+        # Create a queue for logging and start the logging process
+        log_queue = mp.Queue()
+        listener = log_listener(log_queue, xrd_dir)
 
         # Parallel processing of CIF files using multiprocessing
         num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
-        with Pool(processes=num_workers) as pool:
+        with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
             results = list(tqdm(pool.imap_unordered(
                 generate_single_xrd, tasks
-            ), total=len(data), desc="calculating XRD..."))
+            ), total=len(data), desc="Calculating XRD...", leave=False))
+
+        # Stop log listener and flush
+        listener.stop()
+        logging.shutdown()
     
         # Filter out None results from failed processing
         valid_results = [result for result in results if result is not None]
-        print(f"before: {len(results)} --> after: {len(valid_results)}\n")
+        print(f"Reduction in {dataset_name} dataset: {len(results)} --> {len(valid_results)}")
 
         # Save
         print(f"Saving {dataset_name} dataset with XRD data...", end="")
@@ -320,7 +388,6 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
         with gzip.open(output_path, "wb") as pkl:
             pickle.dump(valid_results, pkl)
         print("DONE.")
-    print()
 
     # Initialize metadata for XRD calculation
     metadata = {
@@ -336,18 +403,22 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
     }
     # Save XRD metadata to centralized file
     save_metadata(metadata, data_dir)
+        
+    print(f"Generated XRD have been saved to {xrd_dir}")
+    print()
 
 def tokenize_single_datum(args):
     
     # Extract arguments
     name, xrd_discrete, xrd_cont, cif_content, debug = args
+    logger = logging.getLogger()
 
     # Convert discrete xrd to string
     xrd_discrete_str = "\n".join([f"{x:5.4f}, {y:5.4f}" for (x,y) in zip(*xrd_discrete)])
         
     # Remove symmetries and header from cif_content before tokenizing
-    cif_content = replace_symmetry_loop(cif_content)
-    cif_content = remove_cif_header(cif_content)
+    cif_content_noheader = remove_cif_header(cif_content)
+    cif_content_nosym = replace_symmetry_loop(cif_content_noheader)
 
     # Initialise Tokenizer
     tokenizer = Tokenizer()
@@ -355,25 +426,29 @@ def tokenize_single_datum(args):
     encode = tokenizer.encode
 
     try:
-        cif_tokenized = encode(tokenize(cif_content))
+        cif_tokenized = encode(tokenize(cif_content_nosym))
         xrd_tokenized = encode(tokenize(xrd_discrete_str))
     except Exception as e:
         if debug:
-            #print(f"Error processing {path}: {e}")
-            raise e
+            print(f"Error processing {name}: {e}")
+        logger.exception(f"Exception in worker function with tokenization for CIF with name {name}, with error:\n {e}\n\n")
         return None
 
-    return name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content, cif_tokenized
+    return name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content_noheader, cif_tokenized
 
 def tokenize_datasets(data_dir, debug_max=None, debug=False):
     # Find train / val / test
-    xrd_dir = os.path.join(data_dir, "xrd_data")
+    xrd_dir = os.path.join(data_dir, "xrd")
     datasets = glob(os.path.join(xrd_dir, '*.pkl.gz'))
     assert len(datasets) > 0, f"Cannot find any files with xrd data in {xrd_dir}"
 
     # Make sure that there is an output
     tokenized_dir = os.path.join(data_dir, "tokenized")
     os.makedirs(tokenized_dir, exist_ok=True)
+        
+    print("-"*20)
+    print("TOKENIZATION")
+    print("-"*20)
 
     for dataset_path in datasets:
         dataset_name = dataset_path.split("/")[-1].split(".")[0].split("_")[0]
@@ -387,17 +462,25 @@ def tokenize_datasets(data_dir, debug_max=None, debug=False):
 
         # Prepare arguments for parallel processing
         tasks = [(name, xrd_discrete, xrd_cont, cif_content, debug) for (name, xrd_discrete, xrd_cont, cif_content) in data]
+        
+        # Create a queue for logging and start the logging process
+        log_queue = mp.Queue()
+        listener = log_listener(log_queue, tokenized_dir)
 
         # Parallel processing of CIF files using multiprocessing
         num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
-        with Pool(processes=num_workers) as pool:
+        with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
             results = list(tqdm(pool.imap_unordered(
                 tokenize_single_datum, tasks
-            ), total=len(data), desc="tokenizing CIF and XRD..."))
+            ), total=len(data), desc="Tokenizing CIF and XRD...", leave=False))
+        
+        # Stop log listener and flush
+        listener.stop()
+        logging.shutdown()
     
         # Filter out None results from failed processing
         valid_results = [result for result in results if result is not None]
-        print(f"before: {len(results)} --> after: {len(valid_results)}\n")
+        print(f"Reduction in {dataset_name} dataset: {len(results)} --> {len(valid_results)}")
 
         # Save
         print(f"Saving {dataset_name} tokenized data...", end="")
@@ -405,17 +488,19 @@ def tokenize_datasets(data_dir, debug_max=None, debug=False):
         with gzip.open(output_path, "wb") as pkl:
             pickle.dump(valid_results, pkl)
         print("DONE.")
-    print()
 
     # Initialize metadata for tokenization
     metadata = {
         "vocab_size": Tokenizer().vocab_size
     }    
 
-    # Save tokenization metadata to centralized file
+    # Save tokenization metadata
     save_metadata(metadata, data_dir)
+        
+    print(f"Tokenized data have been saved to {tokenized_dir}")
+    print()
 
-def convert_pkl_to_hdf5(data_dir):
+def serialize(data_dir):
     '''
     Converts the pkl.gz dataset files to HDF5 file format.
     
@@ -432,9 +517,12 @@ def convert_pkl_to_hdf5(data_dir):
     assert len(datasets) > 0, f"Cannot find any tokenized data in {tokenized_dir}"
 
     # Make sure that there is an output
-    hdf5_dir = os.path.join(data_dir, "hdf5_data")
+    hdf5_dir = os.path.join(data_dir, "hdf5")
     os.makedirs(hdf5_dir, exist_ok=True)
 
+    print("-"*20)
+    print("SERIALIZATION")
+    print("-"*20)
     for dataset_path in datasets:
         dataset_name = dataset_path.split("/")[-1].split(".")[0].split("_")[0]
 
@@ -464,17 +552,19 @@ def convert_pkl_to_hdf5(data_dir):
             hdf5_file.create_dataset('cif_tokenized', data=data_dict['cif_tokenized'], dtype=h5py.special_dtype(vlen=np.dtype('int32')))
 
     print(f"Successfully created HDF5 files at {hdf5_dir}.")
+    print()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare custom CIF files and save to a tar.gz file.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--data_dir", type=str, help="Path to the outer data directory", required=True)
+    parser.add_argument("--name", "-n", type=str, help="Name of data preparation", required=True)
     parser.add_argument("--group_size", type=int, help="Spacegroup group size for stratification", default=10)
     parser.add_argument("--decimal_places", type=int, help="Number of decimal places for floats in CIF files", default=4)
     parser.add_argument("--remove_occ", help="Remove structures with occupancies less than one", action="store_true")
 
     parser.add_argument("--preprocess", help="preprocess files", action="store_true")
-    parser.add_argument("--calc_xrd", help="calculate XRD", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--xrd", help="calculate XRD", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--tokenize", help="tokenize CIFs and XRD patterns", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--serialize", help="serialize data by hdf5 convertion", action="store_true")  # Placeholder for future implementation
 
@@ -483,27 +573,25 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Make data prep directory and update data_dir
+    args.data_dir = os.path.join(args.data_dir, args.name)
+    os.makedirs(args.data_dir, exist_ok=True)
+
     # Adjust debug_max if no limit is specified
     if args.debug_max == 0:
         args.debug_max = None
 
     if args.preprocess:
         preprocess(args.data_dir, args.seed, args.group_size, args.decimal_places, args.remove_occ, args.debug_max, args.debug)
-        print(f"Prepared CIF files have been saved to {os.path.join(args.data_dir, 'preprocessed')}")
-        print()
 
-    if args.calc_xrd:
+    if args.xrd:
         generate_xrd(args.data_dir, debug_max=args.debug_max, debug=args.debug)
-        print(f"Generated XRD have been saved to {os.path.join(args.data_dir, 'xrd_data')}")
-        print()
 
     if args.tokenize:
         tokenize_datasets(args.data_dir, debug_max=args.debug_max, debug=args.debug)
-        print(f"Tokenized data have been saved to {os.path.join(args.data_dir, 'tokenized')}")
-        print()
     
     if args.serialize:
-        convert_pkl_to_hdf5(args.data_dir)
+        serialize(args.data_dir)
 
     # Store all arguments passed to the main function in centralized metadata
     metadata = {

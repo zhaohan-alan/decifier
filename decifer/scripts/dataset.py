@@ -5,6 +5,8 @@ import numpy as np
 from . import Tokenizer
 import sys
 sys.path.append("./")
+from time import time
+from tqdm.auto import tqdm
 
 class HDF5Dataset(Dataset):
     def __init__(self, h5_file_path, data_to_load, block_size, numeric_padding_value=0):
@@ -15,13 +17,22 @@ class HDF5Dataset(Dataset):
         
         self.token_padding_value = Tokenizer().padding_id
         self.numeric_padding_value = numeric_padding_value
+        
+        # Precompute chunk offsets with a progress bar
+        self.sequence_chunk_map = []
+        total_chunks = 0
+        
+        # Use tqdm to wrap the outer loop and provide a progress bar
+        for key in tqdm(self.data_to_load, desc="Processing datasets", leave=False):
+            for i, sequence in enumerate(self.data[key]):
+                num_chunks = (len(sequence) + block_size - 1) // block_size
+                self.sequence_chunk_map.append((key, i, total_chunks, num_chunks))
+                total_chunks += num_chunks
+
+        self.total_chunks = total_chunks
 
     def __len__(self):
-        total_chunks = 0
-        for key in self.data_to_load:
-            for sequence in self.data[key]:
-                total_chunks += (len(sequence) + self.block_size - 1) // self.block_size
-        return total_chunks
+        return self.total_chunks
 
     def __getitem__(self, idx):
         sequence_chunks = self.find_sequence_and_chunk(idx)
@@ -59,12 +70,17 @@ class HDF5Dataset(Dataset):
         return tuple(data)
 
     def find_sequence_and_chunk(self, idx):
-        total_chunks = 0
-        for key in self.data_to_load:
-            for i, sequence in enumerate(self.data[key]):
-                num_chunks = (len(sequence) + self.block_size - 1) // self.block_size
-                if idx < total_chunks + num_chunks:
-                    chunk_idx = idx - total_chunks
-                    return {'sequence_idx': i, 'chunk_idx': chunk_idx}
-                total_chunks += num_chunks
+        # Binary search to find the correct sequence and chunk
+        left, right = 0, len(self.sequence_chunk_map) - 1
+        while left <= right:
+            mid = (left + right) // 2
+            key, seq_idx, chunk_start, num_chunks = self.sequence_chunk_map[mid]
+            
+            if chunk_start <= idx < chunk_start + num_chunks:
+                chunk_idx = idx - chunk_start
+                return {'sequence_idx': seq_idx, 'chunk_idx': chunk_idx}
+            elif idx < chunk_start:
+                right = mid - 1
+            else:
+                left = mid + 1
         raise IndexError("Index out of bounds")
