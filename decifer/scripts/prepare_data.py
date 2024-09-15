@@ -22,7 +22,7 @@ from logging import handlers
 
 from decifer import (
     Tokenizer,
-    replace_symmetry_loop,
+    replace_symmetry_loop_with_P1,
     remove_cif_header,
     remove_oxidation_loop,
     format_occupancies,
@@ -417,8 +417,9 @@ def tokenize_single_datum(args):
     xrd_discrete_str = "\n".join([f"{x:5.4f}, {y:5.4f}" for (x,y) in zip(*xrd_discrete)])
         
     # Remove symmetries and header from cif_content before tokenizing
-    cif_content_noheader = remove_cif_header(cif_content)
-    cif_content_nosym = replace_symmetry_loop(cif_content_noheader)
+    cif_content = remove_cif_header(cif_content)
+    cif_content_reduced = replace_data_formula_with_nonreduced_formula(cif_content)
+    cif_content_nosym = replace_symmetry_loop_with_P1(cif_content_reduced)
 
     # Initialise Tokenizer
     tokenizer = Tokenizer()
@@ -434,7 +435,7 @@ def tokenize_single_datum(args):
         logger.exception(f"Exception in worker function with tokenization for CIF with name {name}, with error:\n {e}\n\n")
         return None
 
-    return name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content_noheader, cif_tokenized
+    return name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content_reduced, cif_tokenized
 
 def tokenize_datasets(data_dir, debug_max=None, debug=False):
     # Find train / val / test

@@ -13,7 +13,7 @@ from torch import Tensor
 import torch.nn as nn
 from torch.nn import functional as F
 
-from decifer import (
+from decifer.scripts.tokenizer import (
     Tokenizer,
 )
 
@@ -379,13 +379,12 @@ class UnconditionedDecifer(nn.Module):
                 break
             # as soon as <pad> is hit -> end of cif
             if idx_next.item() == pad_id:
-                idx = idx[:-1]
+                idx = idx[:,:-1]
                 break
-
             prev_id = idx_next.item()
             generation_pbar.update(1)
         generation_pbar.close()
-
+        
         return idx
     
     @torch.no_grad()
@@ -424,7 +423,7 @@ class UnconditionedDecifer(nn.Module):
             
             # as soon as <pad> is hit -> end of cif
             if idx_next.item() == pad_id:
-                idx = idx[:-1]
+                idx = idx[:,:-1]
                 break
 
             # Decode and print
@@ -442,3 +441,70 @@ class UnconditionedDecifer(nn.Module):
             prev_id = idx_next.item()
 
         return idx
+
+    @torch.no_grad()
+    def generate_sequences(self, sequences, prompt_lengths, max_new_tokens, temperature=1.0, top_k=None, disable_pbar=False):
+        """
+        Perform inference one by one for each input sequence, but as fast as possible with pre-allocation and minimization of tensor concatenation.
+        """
+        tokenizer = Tokenizer()
+        newline_id = tokenizer.token_to_id["\n"]
+        pad_id = tokenizer.padding_id
+
+        generation_pbar = tqdm(total=len(sequences) * max_new_tokens, desc='Generating sequences', leave=False, disable=disable_pbar)
+
+        # Store the generated outputs for all sequences
+        all_generated = []
+
+        # Ensure the model is in evaluation mode for faster inference
+        self.eval()
+
+        # Pre-allocate the generated sequence tensor to avoid repeated memory allocations
+        for i, prompt in enumerate(sequences):
+            # Pre-allocate the max sequence length
+            max_length = prompt_lengths[i] + max_new_tokens
+            generated_sequence = torch.zeros((max_length,), dtype=torch.long, device=prompt.device)
+            generated_sequence[:prompt_lengths[i]] = prompt[:prompt_lengths[i]]
+            seq_len = prompt_lengths[i]
+            finished = False
+
+            for step in range(max_new_tokens):
+                if finished:
+                    break
+
+                # Forward pass: only take the valid portion of the sequence (last block_size tokens)
+                idx_cond = generated_sequence[max(0, seq_len - self.config.block_size):seq_len].unsqueeze(0)  # (1, seq_len)
+                logits, _ = self(idx_cond)
+
+                # Take logits for the last position and scale by temperature
+                logits = logits[:, -1, :] / temperature
+
+                # Apply top-k filtering if specified
+                if top_k is not None:
+                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < v[:, [-1]]] = -float("Inf")
+
+                # Compute probabilities and sample from the distribution
+                probs = F.softmax(logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1).squeeze(0)
+
+                # Append the new token to the generated sequence
+                generated_sequence[seq_len] = next_token
+                seq_len += 1
+
+                # Check for stopping conditions: <pad> or double newline
+                if next_token.item() == pad_id or (generated_sequence[seq_len - 2].item() == newline_id and next_token.item() == newline_id):
+                    finished = True
+
+                generation_pbar.update(1)
+
+            # Add the final generated sequence without padding
+            all_generated.append(generated_sequence[:seq_len])
+
+        generation_pbar.close()
+
+        return all_generated
+
+
+
+

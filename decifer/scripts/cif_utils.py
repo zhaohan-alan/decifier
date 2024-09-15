@@ -8,13 +8,40 @@ from pymatgen.io.cif import CifBlock
 from pymatgen.symmetry.groups import SpaceGroup
 from pymatgen.core.operations import SymmOp
 
-def replace_symmetry_loop(cif_str):
+def replace_symmetry_loop_with_P1(cif_str):
     start = cif_str.find("_symmetry_equiv_pos_site_id")
     end = cif_str.find("loop_", start+1)
 
     replacement = """_symmetry_equiv_pos_site_id\n_symmetry_equiv_pos_as_xyz\n1  'x, y, z'\n"""
 
     return cif_str.replace(cif_str[start:end], replacement)
+
+def reinstate_symmetry_loop(cif_str, space_group_symbol):
+    space_group = SpaceGroup(space_group_symbol)
+    symmetry_ops = space_group.symmetry_ops
+
+    loops = []
+    data = {}
+    symmops = []
+    for op in symmetry_ops:
+        v = op.translation_vector
+        symmops.append(SymmOp.from_rotation_and_translation(op.rotation_matrix, v))
+
+    try:
+        ops = [op.as_xyz_string() for op in symmops]
+    except:
+        ops = [op.as_xyz_str() for op in symmops]
+    data["_symmetry_equiv_pos_site_id"] = [f"{i}" for i in range(1, len(ops) + 1)]
+    data["_symmetry_equiv_pos_as_xyz"] = ops
+
+    loops.append(["_symmetry_equiv_pos_site_id", "_symmetry_equiv_pos_as_xyz"])
+
+    symm_block = str(CifBlock(data, loops, "")).replace("data_\n", "")
+
+    pattern = r"(loop_\n_symmetry_equiv_pos_site_id\n_symmetry_equiv_pos_as_xyz\n1  'x, y, z')"
+    cif_str_updated = re.sub(pattern, symm_block, cif_str)
+
+    return cif_str_updated
 
 def remove_cif_header(cif_str):
     lines = cif_str.split('\n')
@@ -126,4 +153,17 @@ def round_numbers(cif_str, decimal_places=4):
     cif_string_rounded = re.sub(pattern, round_number, cif_str)
 
     return cif_string_rounded
+
+def get_unit_cell_volume(a, b, c, alpha_deg, beta_deg, gamma_deg):
+    alpha_rad = math.radians(alpha_deg)
+    beta_rad = math.radians(beta_deg)
+    gamma_rad = math.radians(gamma_deg)
+
+    volume = (a * b * c * math.sqrt(1 - math.cos(alpha_rad) ** 2 - math.cos(beta_rad) ** 2 - math.cos(gamma_rad) ** 2 +
+                                    2 * math.cos(alpha_rad) * math.cos(beta_rad) * math.cos(gamma_rad)))
+
+    return volume
+
+def extract_volume(cif_str):
+    return extract_numeric_property(cif_str, "_cell_volume")
 
