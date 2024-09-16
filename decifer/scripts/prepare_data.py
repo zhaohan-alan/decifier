@@ -132,9 +132,10 @@ def process_single_cif(args):
         
         # Option for removing structures with occupancies below 1
         if remove_occ_less_than_one:
-            for site in structure:
-                if any(occ < 1 for occ in site.species_and_occu.values()):
-                    raise Exception()
+            for site in struct:
+                occ = list(site.species.as_dict().values())[0]
+                if occ < 1:
+                    raise Exception("Occupancy below 1.0 found")
 
         # Get stratification key
         strat_key = create_stratification_key(struct, spacegroup_group_size)
