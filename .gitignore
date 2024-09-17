@@ -1,5 +1,6 @@
 # Ignore data
 decifer/data/ 
+decifer/logs/
 
 # Ignore pycache and notebook checkpoints
 **/__pycache__/
