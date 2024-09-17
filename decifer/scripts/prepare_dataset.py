@@ -4,7 +4,13 @@ import os
 import io
 import pickle
 import argparse
-from pymatgen.io.cif import CifWriter, CifParser, Structure
+from pymatgen.io.cif import CifWriter, Structure, CifParser
+
+try:
+    parser_from_string = CifParser.from_str
+except:
+    parser_from_string = CifParser.from_string
+
 from pymatgen.analysis.diffraction.xrd import XRDCalculator
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
@@ -113,8 +119,8 @@ def process_single_cif(args):
     Process a single CIF file to extract its content and spacegroup-based stratification key.
 
     Args:
-        args (tuple): Contains (path, spacegroup_group_size, debug).
-            path (str): Path to the CIF file.
+        args (tuple): Contains (cif, spacegroup_group_size, debug).
+            cif (str): Either path to the CIF file or cif files as a string.
             spacegroup_group_size (int): Spacegroup bin size for stratification.
             decimal_places (int): Number of decimal places to be enforced in floats in CIF file.
             remove_occ_less_than_one (bool): If True, structures with occupancy less than 1.0 will be removed.
@@ -123,12 +129,16 @@ def process_single_cif(args):
     Returns:
         tuple: (strat_key, cif_content) if processing is successful, else None.
     """
-    path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug = args
+    cif, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug = args
     logger = logging.getLogger()
-    name = os.path.basename(path)
     try:
         # Make structure
-        struct = Structure.from_file(path)
+        if os.path.isfile(cif):
+            struct = Structure.from_file(cif)
+            name = os.path.basename(cif)
+        else:
+            print(cif)
+            struct = parser_from_string(cif).get_structures()[0]
         
         # Option for removing structures with occupancies below 1
         if remove_occ_less_than_one:
@@ -158,10 +168,9 @@ def process_single_cif(args):
         return (name, strat_key, cif_content)
     except Exception as e:
         if debug:
-            #raise e
-            print(f"Error processing {path}: {e}")
+            print(f"Error processing {cif}: {e}")
 
-        logger.exception(f"Exception in worker function pre-processing CIF with path {path}, with error:\n {e}\n\n")
+        logger.exception(f"Exception in worker function pre-processing CIF {cif}, with error:\n {e}\n\n")
 
         return None
 
@@ -182,28 +191,37 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
         None
     """
 
-    # Find raw CIF files
+    # Find the raw files
     raw_dir = os.path.join("/".join(data_dir.split("/")[:-1]), "raw")
-    cif_paths = sorted(glob(os.path.join(raw_dir, "*.cif")))[:debug_max]
-    assert len(cif_paths) > 0, f"Cannot find any .cif files in {raw_dir}"
+    raw_pkl_gz = os.path.join("/".join(data_dir.split("/")[:-1]), "raw.pkl.gz")
+    if os.path.exists(raw_dir):
+        print(f"Found raw files folder, {raw_dir}")
+        cifs = sorted(glob(os.path.join(raw_dir, "*.cif")))[:debug_max]
+    elif os.path.isfile(raw_pkl_gz):
+        with gzip.open(raw_pkl_gz, 'rb') as f:
+            cifs = pickle.load(f)[:debug_max]
+    else:
+        raise Exception("Cannot find path to raw .cif files in {data_dir}")
+    # Assert that files exists
+    assert len(cifs) > 0, f"Cannot find any .cif files in {raw_dir}"
 
     # Output directory
     pre_dir = os.path.join(data_dir, "preprocessed")
     os.makedirs(pre_dir, exist_ok=True)
 
     # Prepare arguments for parallel processing
-    tasks = [(path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug) for path in cif_paths]
+    tasks = [(path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug) for path in cifs]
     
     # Create a queue for logging and start the logging process
     log_queue = mp.Queue()
     listener = log_listener(log_queue, pre_dir)
 
     # Parallel processing of CIF files using multiprocessing
-    num_workers = min(cpu_count(), len(cif_paths))  # Use available CPU cores, limited to number of files
+    num_workers = min(cpu_count(), len(cifs))  # Use available CPU cores, limited to number of files
     with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
         results = list(tqdm(pool.imap_unordered(
             process_single_cif, tasks
-        ), total=len(cif_paths), desc="Preprocessing CIFs...", leave=False))
+        ), total=len(cifs), desc="Preprocessing CIFs...", leave=False))
         
     # Stop log listener and flush
     listener.stop()
@@ -216,7 +234,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     print("-"*20)
     print("PRE-PROCESSING")
     print("-"*20)
-    print(f"Reduction in dataset: {len(cif_paths)} samples --> {len(cif_contents)} samples")
+    print(f"Reduction in dataset: {len(cifs)} samples --> {len(cif_contents)} samples")
 
     # Create data splits
     train_size = int(0.8 * len(cif_contents))
@@ -250,7 +268,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
         "train_size": train_size,
         "val_size": val_size,
         "test_size": test_size,
-        "total_files_processed": len(cif_paths),
+        "total_files_processed": len(cifs),
         "total_valid_files": len(cif_contents),
         "decimal_places": decimal_places,
         "remove_occ_less_than_one": remove_occ_less_than_one,
@@ -270,9 +288,7 @@ def generate_single_xrd(args):
     
     # Generate structure from cif_content
     try:
-        struct = CifParser.from_str(cif_content).get_structures()[0]
-    except AttributeError:
-        struct = CifParser.from_string(cif_content).get_structures()[0]
+        struct = parser_from_string(cif_content).get_structures()[0]
     except Exception as e:
         if debug:
             print(f"Error processing {name}: {e}")
@@ -324,7 +340,7 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
     Calculate the XRD pattern from a CIF string using pytmatgen with Gaussian peak broadening and noise.
 
     Args:
-        data_dir (str): Directory containing the raw CIF files.
+        data_dir (str): Directory containing the preprocessed pkl.gz files.
         wavelength (str): X-ray wavelength (default is 'CuKa').
         qmin (float): Minimum Q value (default is 0).
         qmax (float): Maximum Q value (default is 20).
