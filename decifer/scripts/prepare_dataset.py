@@ -133,12 +133,14 @@ def process_single_cif(args):
     logger = logging.getLogger()
     try:
         # Make structure
-        if os.path.isfile(cif):
+        if isinstance(cif, str):
             struct = Structure.from_file(cif)
             name = os.path.basename(cif)
-        else:
-            print(cif)
+        elif isinstance(cif, tuple):
+            name, cif = cif
             struct = parser_from_string(cif).get_structures()[0]
+        else:
+            raise Exception()
         
         # Option for removing structures with occupancies below 1
         if remove_occ_less_than_one:
