@@ -8,3 +8,12 @@ decifer/logs/
 
 # Ignore ckpt files and other pytorch files
 **/*.pt
+
+# Ignore images and csvs # TODO for now
+**/*.png
+**/*.jpg
+**/*.csv
+
+# Ignore eval files
+**/*.parquet
+**/*.eval
