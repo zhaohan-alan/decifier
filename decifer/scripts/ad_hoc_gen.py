@@ -67,9 +67,12 @@ def evaluate_cif(cif):
         })
         eval_dict['cell_params']['implied_vol'] = get_unit_cell_volume(a, b, c, alpha, beta, gamma)
         eval_dict['cell_params']['gen_vol'] = extract_volume(cif)
-        
+
     except Exception as e:
         raise e
+        
+    finally:
+        return eval_dict
 
 def main():
     # Initialize argparse for input handling
@@ -124,6 +127,12 @@ def main():
         cif = reinstate_symmetry_loop(cif, spacegroup_symbol)
     
     print(cif)
+    eval_results = evaluate_cif(cif)
+    print('syntax', evaluate_syntax_validity(cif))
+    print('spg', extract_space_group_symbol(cif))
+    print('sensible', is_sensible(cif))
+
+    #print(evaluate_cif(cif))
     
 #     if is_sensible(cif):
 #         # Evaluate the CIF
