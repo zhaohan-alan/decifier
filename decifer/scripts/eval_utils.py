@@ -111,6 +111,7 @@ def is_formula_consistent(cif_str):
         parser = CifParser.from_string(cif_str)
     except:
         parser = CifParser.from_str(cif_str)
+
     cif_data = parser.as_dict()
 
     formula_data = Composition(extract_data_formula(cif_str))
@@ -177,9 +178,10 @@ def is_valid(cif_str, bond_length_acceptability_cutoff=1.0):
         return False
     if not is_atom_site_multiplicity_consistent(cif_str):
         return False
-#     bond_length_score = bond_length_reasonableness_score(cif_str)
-#     if bond_length_score < bond_length_acceptability_cutoff:
-#         return False
+
+    bond_length_score = bond_length_reasonableness_score(cif_str)
+    if bond_length_score < bond_length_acceptability_cutoff:
+         return False
     if not is_space_group_consistent(cif_str):
         return False
     return True
@@ -188,17 +190,17 @@ def evaluate_syntax_validity(cif_str, bond_length_acceptability_cutoff=1.0):
     validity = {
         "formula_consistency": False,
         "atom_site_multiplicity": False, 
-#         "bond_length_acceptability": False, 
+        "bond_length_acceptability": False, 
         "space_group_consistency": False,
     }
     if is_formula_consistent(cif_str):
         validity["formula_consistency"] = True
     if is_atom_site_multiplicity_consistent(cif_str):
         validity["atom_site_multiplicity"] = True
-#     bond_length_score = bond_length_reasonableness_score(cif_str)
-#     if bond_length_score < bond_length_acceptability_cutoff:
-#         validity["bond_length_acceptability"] = True
-    if not is_space_group_consistent(cif_str):
+    bond_length_score = bond_length_reasonableness_score(cif_str)
+    if bond_length_score < bond_length_acceptability_cutoff:
+        validity["bond_length_acceptability"] = True
+    if is_space_group_consistent(cif_str):
         validity["space_group_consistency"] = True
     
     return validity
