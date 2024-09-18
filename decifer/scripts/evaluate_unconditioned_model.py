@@ -89,7 +89,6 @@ def worker(input_queue, output_queue):
             cif = decode(token_ids)
             cif = replace_symmetry_loop_with_P1(cif)
             spacegroup_symbol = extract_space_group_symbol(cif)
-            print(spacegroup_symbol, flush=True)
             if spacegroup_symbol != "P 1":
                 cif = reinstate_symmetry_loop(cif, spacegroup_symbol)
             if is_sensible(cif):
@@ -106,7 +105,7 @@ def worker(input_queue, output_queue):
             output_queue.put({'error': str(e), 'index': idx})
 
 def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
-                    out_file_path='evaluations.eval', debug_max=None, debug=False,
+                    out_folder_path='./', debug_max=None, debug=False,
                     add_composition=False, add_spacegroup=False, max_new_tokens=1000,
                     dataset_name='DefaultDataset', model_name='DefaultModel'):
     evaluations = []
@@ -173,6 +172,7 @@ def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
     df = pd.json_normalize(evaluations)
 
     # Write to Parquet file
+    out_file_path = os.path.join(out_folder_path, dataset_name + '.eval')
     df.to_parquet(out_file_path, compression='snappy')
 
     return evaluations
@@ -192,8 +192,8 @@ if __name__ == '__main__':
     parser.add_argument('--dataset-path', type=str, required=True,
                         help='Path to the dataset HDF5 file. If not specified, it is derived from the config.')
 
-    parser.add_argument('--out-path', type=str, default='evaluations.eval',
-                    help='Path to the output Parquet file (default: evaluations.eval).')
+    parser.add_argument('--out-folder', type=str, default='./',
+                    help='Path to the output folder (default: ./).')
 
     parser.add_argument('--debug-max', type=int, default=None,
                         help='Maximum number of samples to process for debugging purposes (default: process all samples).')
@@ -210,7 +210,7 @@ if __name__ == '__main__':
                         help='Maximum number of new tokens to generate (default: 1000).')
 
     parser.add_argument('--dataset-name', type=str, default='DefaultDataset',
-                    help='Name of the dataset (default: DefaultDataset).')
+                    help='Name of the dataset, will name the eval file (default: DefaultDataset).')
 
     parser.add_argument('--model-name', type=str, default='DefaultModel',
                     help='Name of the model (default: DefaultModel).')
@@ -265,7 +265,7 @@ if __name__ == '__main__':
         input_queue,
         output_queue,
         num_workers,
-        out_file_path=args.out_path,
+        out_folder_path=args.out_folder,
         debug_max=args.debug_max,
         debug=args.debug,
         add_composition=args.add_composition,
