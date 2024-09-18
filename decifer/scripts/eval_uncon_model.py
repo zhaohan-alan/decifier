@@ -111,33 +111,50 @@ def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
     evaluations = []
     invalid_cifs = 0
     start = time()
+    
+    # Padding token
+    padding_id = Tokenizer().padding_id
 
     pbar = tqdm(total=len(test_dataset), desc='Generating and evaluating...', leave=True)
     n_sent = 0
     for i, sample in enumerate(test_dataset):
         if debug_max and (i + 1) > debug_max:
             break  # Stop after reaching the debug_max limit
-        prompt = extract_prompt(
-            sample[0],
-            model.device,
-            add_composition=add_composition,
-            add_spacegroup=add_spacegroup
-        ).unsqueeze(0)
-        if prompt is not None:
-            token_ids = model.generate(
-                prompt,
-                max_new_tokens=max_new_tokens,
-                disable_pbar=True
-            )[0].cpu().numpy()
-            # Send the token ids and index to the worker without preprocessing
+        if model is not None:
+            prompt = extract_prompt(
+                sample[0],
+                model.device,
+                add_composition=add_composition,
+                add_spacegroup=add_spacegroup
+            ).unsqueeze(0)
+            if prompt is not None:
+                token_ids = model.generate(
+                    prompt,
+                    max_new_tokens=max_new_tokens,
+                    disable_pbar=True
+                )[0].cpu().numpy()
+                # Send the token ids and index to the worker without preprocessing
+                task = {
+                    'token_ids': token_ids,
+                    'index': i,
+                    'dataset': dataset_name,
+                    'model': model_name
+                }
+                input_queue.put(task)
+                n_sent += 1
+        else:
+            # We don't prompt, we simply pass the cifs to the workers
+            sample = sample[0]
+            token_ids = sample[sample != padding_id].cpu().numpy()
             task = {
                 'token_ids': token_ids,
                 'index': i,
                 'dataset': dataset_name,
-                'model': model_name
+                'model': "NoModel"
             }
             input_queue.put(task)
             n_sent += 1
+
         pbar.update(1)
     pbar.close()
 
@@ -201,11 +218,17 @@ if __name__ == '__main__':
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug mode with additional output.')
 
+    # No model evaluation
+    parser.add_argument("--no-model", action='store_true', 
+                        help='Enable no-model mode, evaluation from samples from given dataset')
+
     # add_composition, add_spacegroup, and max_new_tokens
     parser.add_argument('--add-composition', action='store_true',
                         help='Include composition in the prompt (default: exclude).')
+
     parser.add_argument('--add-spacegroup', action='store_true',
                         help='Include spacegroup in the prompt (default: exclude).')
+
     parser.add_argument('--max-new-tokens', type=int, default=1000,
                         help='Maximum number of new tokens to generate (default: 1000).')
 
@@ -240,13 +263,15 @@ if __name__ == '__main__':
     # Determine checkpoint path
     ckpt_path = os.path.join(args.root, config["out_dir"], 'ckpt.pt')  # Update with your actual checkpoint path
 
-    if os.path.exists(ckpt_path):
-        model = load_model_from_checkpoint(ckpt_path, device)
+    if args.no_model is False:
+        if os.path.exists(ckpt_path):
+            model = load_model_from_checkpoint(ckpt_path, device)
+            model.eval()  # Set the model to evaluation mode
+        else:
+            print(f"Checkpoint file not found at {ckpt_path}")
+            sys.exit(1)
     else:
-        print(f"Checkpoint file not found at {ckpt_path}")
-        sys.exit(1)
-        
-    model.eval()  # Set the model to evaluation mode
+        model = None
 
     # Set up multiprocessing queues
     input_queue = mp.Queue()
