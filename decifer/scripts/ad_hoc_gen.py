@@ -127,10 +127,11 @@ def main():
         cif = reinstate_symmetry_loop(cif, spacegroup_symbol)
     
     print(cif)
-    eval_results = evaluate_cif(cif)
-    print('syntax', evaluate_syntax_validity(cif))
-    print('spg', extract_space_group_symbol(cif))
-    print('sensible', is_sensible(cif))
+    sensible = is_sensible(cif)
+    print("sensible", sensible)
+    if sensible:
+        eval_results = evaluate_cif(cif)
+        print('syntax', evaluate_syntax_validity(cif))
 
     #print(evaluate_cif(cif))
     
