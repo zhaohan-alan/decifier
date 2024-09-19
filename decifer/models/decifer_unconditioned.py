@@ -386,6 +386,66 @@ class UnconditionedDecifer(nn.Module):
         generation_pbar.close()
         
         return idx
+
+    @torch.no_grad()
+    def generate_batched_reps(self, idx, max_new_tokens, temperature=1.0, top_k=None, disable_pbar=False):
+        """
+        Take a conditioning sequence of indices idx (LongTensor of shape (batch_size, seq_len)) and complete
+        the sequence max_new_tokens times, feeding the predictions back into the model each time.
+        """
+        tokenizer = Tokenizer()
+        newline_id = tokenizer.token_to_id["\n"]
+        pad_id = tokenizer.padding_id
+        batch_size = idx.size(0)
+        device = idx.device
+
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        prev_id = torch.full((batch_size,), fill_value=-1, dtype=torch.long, device=device)
+        seq_lens = torch.full((batch_size,), fill_value=-1, dtype=torch.long, device=device)
+
+        generation_pbar = tqdm(total=max_new_tokens, desc='Generating sequence', leave=False, disable=disable_pbar)
+        for _ in range(max_new_tokens):
+            # if the sequence context is growing too long we must crop it at block_size
+            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+            # forward the model to get the logits for the index in the sequence
+            logits, _ = self(idx_cond)
+            # pluck the logits at the final step and scale by desired temperature
+            logits = logits[:, -1, :] / temperature
+            # optionally crop the logits to only the top k options
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float("Inf")
+            # apply softmax to convert logits to (normalized) probabilities
+            probs = F.softmax(logits, dim=-1)
+            # sample from the distribution
+            idx_next = torch.full((batch_size, 1), fill_value=pad_id, dtype=torch.long, device=device)
+            active_mask = ~finished
+            if active_mask.any():
+                idx_next[active_mask] = torch.multinomial(probs[active_mask], num_samples=1)
+            # append sampled index to the running sequence
+            idx = torch.cat((idx, idx_next), dim=1)
+            # Update prev_id and check stopping conditions
+            idx_next_squeezed = idx_next.squeeze(-1)
+            end_condition = ((prev_id == newline_id) & (idx_next_squeezed == newline_id)) | (idx_next_squeezed == pad_id)
+            # Record sequence lengths when sequences finish
+            just_finished = end_condition & (~finished)
+            # Exclude the last token that triggered the end condition
+            seq_lens[just_finished] = idx.size(1) - 1
+            finished = finished | end_condition
+            prev_id = idx_next_squeezed
+            generation_pbar.update(1)
+            if finished.all():
+                break
+        generation_pbar.close()
+        # For sequences that didn't finish, set seq_lens to idx.size(1)
+        seq_lens[seq_lens == -1] = idx.size(1)
+        # Truncate sequences to their actual length
+        max_seq_len = seq_lens.max().item()
+        idx_truncated = torch.full((batch_size, max_seq_len), fill_value=Tokenizer().padding_id, dtype=idx.dtype, device=idx.device)
+        for i in range(batch_size):
+            seq_len = seq_lens[i].item()
+            idx_truncated[i, :seq_len] = idx[i, :seq_len]
+        return idx_truncated
     
     @torch.no_grad()
     def generate_and_print(self, idx, max_new_tokens, temperature=1.0, top_k=None):
