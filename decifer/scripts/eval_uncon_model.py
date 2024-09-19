@@ -71,7 +71,7 @@ def evaluate_cif(cif):
         pass  # You can log the exception if needed
     return eval_dict
 
-def worker(input_queue, output_queue, progress_list, progress_lock):
+def worker(input_queue, output_queue):
 
     # Create tokenizer
     decode = Tokenizer().decode
@@ -82,6 +82,7 @@ def worker(input_queue, output_queue, progress_list, progress_lock):
             break
         token_ids = task['token_ids']
         idx = task['index']
+        rep = task['rep']
         dataset_name = task.get('dataset', 'UnknownDataset')
         model_name = task.get('model', 'UnknownModel')
         try:
@@ -98,26 +99,17 @@ def worker(input_queue, output_queue, progress_list, progress_lock):
                 eval_result['Dataset'] = dataset_name
                 eval_result['Model'] = model_name
                 eval_result['seq_len'] = len(token_ids)
-                output_queue.put({'result': eval_result, 'index': idx})
+                output_queue.put({'result': eval_result, 'index': idx, 'rep': rep})
             else:
-                output_queue.put({'result': None, 'index': idx})
+                output_queue.put({'result': None, 'index': idx, 'rep': rep})
         except Exception as e:
-            output_queue.put({'error': str(e), 'index': idx})
-        finally:
-            with progress_lock:
-                progress_list.value += 1  # Update progress counter
-
-def listener(num_tasks, progress_list, progress_lock):
-    with tqdm(total=num_tasks) as pbar:  # Initialize tqdm progress bar
-        while progress_list.value < num_tasks:
-            with progress_lock:
-                progress = progress_list.value  # Safely read progress value
-            pbar.update(progress - pbar.n)  # Update the progress bar
+            output_queue.put({'error': str(e), 'index': idx, 'rep': rep})
 
 def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
                     out_folder_path='./', debug_max=None, debug=False,
                     add_composition=False, add_spacegroup=False, max_new_tokens=1000,
-                    dataset_name='DefaultDataset', model_name='DefaultModel'):
+                    dataset_name='DefaultDataset', model_name='DefaultModel',
+                    num_reps=1,):
     evaluations = []
     invalid_cifs = 0
     start = time()
@@ -125,10 +117,12 @@ def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
     # Padding token
     padding_id = Tokenizer().padding_id
 
-    pbar = tqdm(total=min(len(test_dataset), debug_max) if debug_max is not None else len(test_dataset), desc='Generating and evaluating...', leave=True)
+    num_samples = len(test_dataset) * num_reps
+    num_gens = min(num_samples, debug_max * num_reps) if debug_max is not None else num_samples
+    pbar = tqdm(total=num_gens, desc='Generating...', leave=True)
     n_sent = 0
     for i, sample in enumerate(test_dataset):
-        if debug_max and (i + 1) > debug_max:
+        if debug_max and (i + 1) > debug_max * num_reps:
             break  # Stop after reaching the debug_max limit
         if model is not None:
             prompt = extract_prompt(
@@ -138,20 +132,22 @@ def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
                 add_spacegroup=add_spacegroup
             ).unsqueeze(0)
             if prompt is not None:
-                token_ids = model.generate(
-                    prompt,
-                    max_new_tokens=max_new_tokens,
-                    disable_pbar=True
-                )[0].cpu().numpy()
-                # Send the token ids and index to the worker without preprocessing
-                task = {
-                    'token_ids': token_ids,
-                    'index': i,
-                    'dataset': dataset_name,
-                    'model': model_name
-                }
-                input_queue.put(task)
-                n_sent += 1
+                for j in range(num_reps):
+                    token_ids = model.generate(
+                        prompt,
+                        max_new_tokens=max_new_tokens,
+                        disable_pbar=True
+                    )[0].cpu().numpy()
+                    # Send the token ids and index to the worker without preprocessing
+                    task = {
+                        'token_ids': token_ids,
+                        'index': i,
+                        'rep': j,
+                        'dataset': dataset_name,
+                        'model': model_name
+                    }
+                    input_queue.put(task)
+                    n_sent += 1
         else:
             # We don't prompt, we simply pass the cifs to the workers
             sample = sample[0]
@@ -159,6 +155,7 @@ def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
             task = {
                 'token_ids': token_ids,
                 'index': i,
+                'rep': 0,
                 'dataset': dataset_name,
                 'model': "NoModel"
             }
@@ -174,6 +171,7 @@ def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
 
     # Collect results
     n_received = 0
+    pbar = tqdm(total=n_sent, desc='Evaluating...', leave=True)
     while n_received < n_sent:
         try:
             message = output_queue.get(timeout=1)
@@ -191,6 +189,9 @@ def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
             n_received += 1
         except Empty:
             continue
+        finally:
+            pbar.update(1)
+    pbar.close()
 
     print(f"Processed {n_sent} samples in {(time() - start):.3f} seconds.")
     print(f"Successful: {len(evaluations)} / {n_sent}")
@@ -248,6 +249,9 @@ if __name__ == '__main__':
     parser.add_argument('--model-name', type=str, default='DefaultModel',
                     help='Name of the model (default: DefaultModel).')
 
+    parser.add_argument('--num-reps', type=int, default=1, 
+                        help='Number of repetitions of generation attempt per sample')
+
     # Set defaults for add_composition and add_spacegroup
     parser.set_defaults(add_composition=False, add_spacegroup=False)
 
@@ -287,18 +291,12 @@ if __name__ == '__main__':
     input_queue = mp.Queue()
     output_queue = mp.Queue(maxsize=1000)
     manager = mp.Manager()
-    progress_list = manager.Value('i', 0)  # Progress tracker
-    progress_lock = manager.Lock()  # Lock for safe access
 
     # Start worker processes
     num_workers = args.num_workers
-    processes = [mp.Process(target=worker, args=(input_queue, output_queue, progress_list, progress_lock)) for _ in range(num_workers)]
+    processes = [mp.Process(target=worker, args=(input_queue, output_queue)) for _ in range(num_workers)]
     for p in processes:
         p.start()
-
-    # Start listener to monitor progress
-    listener_process = mp.Process(target=listener, args=(min(test_dataset.total_chunks, args.debug_max) if args.debug_max is not None else test_dataset.total_chunks, progress_list, progress_lock))
-    listener_process.start()
 
     # Call process_dataset with new arguments
     evaluations = process_dataset(
@@ -315,11 +313,9 @@ if __name__ == '__main__':
         max_new_tokens=args.max_new_tokens,
         dataset_name=args.dataset_name,
         model_name=args.model_name,
+        num_reps=args.num_reps,
     )
 
     # Join worker processes
     for p in processes:
         p.join()
-
-    # Wait for the listener to finish
-    listener_process.join()
