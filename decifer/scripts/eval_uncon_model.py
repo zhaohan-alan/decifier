@@ -71,13 +71,13 @@ def evaluate_cif(cif):
         pass  # You can log the exception if needed
     return eval_dict
 
-def worker(input_queue, output_queue):
+def worker(input_queue, output_queue, progress_list, progress_lock):
 
     # Create tokenizer
     decode = Tokenizer().decode
 
     while True:
-        task = input_queue.get()
+        task = input_queue.get(timeout=1)
         if task is None:
             break
         token_ids = task['token_ids']
@@ -103,6 +103,16 @@ def worker(input_queue, output_queue):
                 output_queue.put({'result': None, 'index': idx})
         except Exception as e:
             output_queue.put({'error': str(e), 'index': idx})
+        finally:
+            with progress_lock:
+                progress_list.value += 1  # Update progress counter
+
+def listener(num_tasks, progress_list, progress_lock):
+    with tqdm(total=num_tasks) as pbar:  # Initialize tqdm progress bar
+        while progress_list.value < num_tasks:
+            with progress_lock:
+                progress = progress_list.value  # Safely read progress value
+            pbar.update(progress - pbar.n)  # Update the progress bar
 
 def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
                     out_folder_path='./', debug_max=None, debug=False,
@@ -115,7 +125,7 @@ def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
     # Padding token
     padding_id = Tokenizer().padding_id
 
-    pbar = tqdm(total=len(test_dataset), desc='Generating and evaluating...', leave=True)
+    pbar = tqdm(total=min(len(test_dataset), debug_max) if debug_max is not None else len(test_dataset), desc='Generating and evaluating...', leave=True)
     n_sent = 0
     for i, sample in enumerate(test_dataset):
         if debug_max and (i + 1) > debug_max:
@@ -276,12 +286,19 @@ if __name__ == '__main__':
     # Set up multiprocessing queues
     input_queue = mp.Queue()
     output_queue = mp.Queue(maxsize=1000)
+    manager = mp.Manager()
+    progress_list = manager.Value('i', 0)  # Progress tracker
+    progress_lock = manager.Lock()  # Lock for safe access
 
     # Start worker processes
     num_workers = args.num_workers
-    processes = [mp.Process(target=worker, args=(input_queue, output_queue)) for _ in range(num_workers)]
+    processes = [mp.Process(target=worker, args=(input_queue, output_queue, progress_list, progress_lock)) for _ in range(num_workers)]
     for p in processes:
         p.start()
+
+    # Start listener to monitor progress
+    listener_process = mp.Process(target=listener, args=(min(test_dataset.total_chunks, args.debug_max) if args.debug_max is not None else test_dataset.total_chunks, progress_list, progress_lock))
+    listener_process.start()
 
     # Call process_dataset with new arguments
     evaluations = process_dataset(
@@ -303,3 +320,6 @@ if __name__ == '__main__':
     # Join worker processes
     for p in processes:
         p.join()
+
+    # Wait for the listener to finish
+    listener_process.join()
