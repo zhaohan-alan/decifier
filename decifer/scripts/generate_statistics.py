@@ -69,15 +69,17 @@ def generate_statistics_table(df, output_folder):
     required_columns = [
         'Dataset', 'Model', 'cif',
         'syntax_validity.space_group_consistency',
-        'syntax_validity.atom_site_multiplicity'
+        'syntax_validity.atom_site_multiplicity',
+        'syntax_validity.bond_length_acceptability',
     ]
 
     # Ensure validity columns are boolean
     df['syntax_validity.space_group_consistency'] = df['syntax_validity.space_group_consistency'].astype(bool)
     df['syntax_validity.atom_site_multiplicity'] = df['syntax_validity.atom_site_multiplicity'].astype(bool)
+    df['syntax_validity.bond_length_acceptability'] = df['syntax_validity.bond_length_acceptability'].astype(bool)
 
     # Calculate overall validity
-    df['valid'] = df[['syntax_validity.space_group_consistency', 'syntax_validity.atom_site_multiplicity']].all(axis=1)
+    df['valid'] = df[['syntax_validity.space_group_consistency', 'syntax_validity.atom_site_multiplicity', 'syntax_validity.bond_length_acceptability']].all(axis=1)
 
     # Group by Dataset and Model to compute statistics
     grouped = df.groupby(['Dataset', 'Model'])
@@ -96,6 +98,10 @@ def generate_statistics_table(df, output_folder):
         # ASM [%]
         asm_pass = group['syntax_validity.atom_site_multiplicity'].sum()
         asm_percentage = (asm_pass / total_samples) * 100
+        
+        # BLR [%]
+        blr_pass = group['syntax_validity.bond_length_acceptability'].sum()
+        blr_percentage = (blr_pass / total_samples) * 100
 
         # Valid [%]
         valid_pass = group['valid'].sum()
@@ -116,6 +122,7 @@ def generate_statistics_table(df, output_folder):
             'Model': model,
             'SG [%]': f"{sg_percentage:.1f}",
             'ASM [%]': f"{asm_percentage:.1f}",
+            'BLR [%]': f"{blr_percentage:.1f}",
             'Valid [%]': f"{valid_percentage:.1f}",
             'Avg. Valid Seq. Len.': seq_length_str
         })
@@ -175,6 +182,8 @@ def generate_plots(df, output_folder):
     plt.ylabel('Generated Volume (Å³)')
     plt.savefig(os.path.join(output_folder, 'implied_vs_generated_volume_scatterplot.png'))
     plt.close()
+    
+    print("Statistic plots saved.")
 
 
 if __name__ == '__main__':
