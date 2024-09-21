@@ -198,7 +198,7 @@ def evaluate_syntax_validity(cif_str, bond_length_acceptability_cutoff=1.0):
     if is_atom_site_multiplicity_consistent(cif_str):
         validity["atom_site_multiplicity"] = True
     bond_length_score = bond_length_reasonableness_score(cif_str)
-    if bond_length_score < bond_length_acceptability_cutoff:
+    if bond_length_score >= bond_length_acceptability_cutoff:
         validity["bond_length_acceptability"] = True
     if is_space_group_consistent(cif_str):
         validity["space_group_consistency"] = True
