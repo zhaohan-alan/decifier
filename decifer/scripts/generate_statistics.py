@@ -10,7 +10,7 @@ import argparse
 warnings.filterwarnings("ignore", category=FutureWarning, message="use_inf_as_na option is deprecated")
 
 
-def process_and_save_plots_and_stats(parquet_file_path, output_folder):
+def process_and_save_plots_and_stats(parquet_file_path, output_folder, upper_limit, bins):
     # Set Seaborn style
     sns.set(style='whitegrid')
 
@@ -61,25 +61,30 @@ def process_and_save_plots_and_stats(parquet_file_path, output_folder):
     generate_statistics_table(df, output_folder)
 
     # Generate and save the plots
-    generate_plots(df, output_folder)
+    generate_plots(df, output_folder, upper_limit, bins)
 
 
 def generate_statistics_table(df, output_folder):
     # Columns required for evaluation
     required_columns = [
         'Dataset', 'Model', 'cif',
+        'syntax_validity.formula_consistency',
         'syntax_validity.space_group_consistency',
         'syntax_validity.atom_site_multiplicity',
         'syntax_validity.bond_length_acceptability',
     ]
 
     # Ensure validity columns are boolean
+    df['syntax_validity.formula_consistency'] = df['syntax_validity.formula_consistency'].astype(bool)
     df['syntax_validity.space_group_consistency'] = df['syntax_validity.space_group_consistency'].astype(bool)
     df['syntax_validity.atom_site_multiplicity'] = df['syntax_validity.atom_site_multiplicity'].astype(bool)
     df['syntax_validity.bond_length_acceptability'] = df['syntax_validity.bond_length_acceptability'].astype(bool)
 
     # Calculate overall validity
-    df['valid'] = df[['syntax_validity.space_group_consistency', 'syntax_validity.atom_site_multiplicity', 'syntax_validity.bond_length_acceptability']].all(axis=1)
+    df['valid'] = df[['syntax_validity.formula_consistency',
+                      'syntax_validity.space_group_consistency', 
+                      'syntax_validity.atom_site_multiplicity', 
+                      'syntax_validity.bond_length_acceptability']].all(axis=1)
 
     # Group by Dataset and Model to compute statistics
     grouped = df.groupby(['Dataset', 'Model'])
@@ -90,6 +95,10 @@ def generate_statistics_table(df, output_folder):
     # Loop over each group to calculate statistics
     for (dataset, model), group in grouped:
         total_samples = len(group)
+        
+        # FC [%]
+        fc_pass = group['syntax_validity.formula_consistency'].sum()
+        fc_percentage = (fc_pass / total_samples) * 100
 
         # SG [%]
         sg_pass = group['syntax_validity.space_group_consistency'].sum()
@@ -120,6 +129,7 @@ def generate_statistics_table(df, output_folder):
         results.append({
             'Dataset': dataset,
             'Model': model,
+            'FC [%]': f"{fc_percentage:.1f}",
             'SG [%]': f"{sg_percentage:.1f}",
             'ASM [%]': f"{asm_percentage:.1f}",
             'BLR [%]': f"{blr_percentage:.1f}",
@@ -136,7 +146,7 @@ def generate_statistics_table(df, output_folder):
     print("Statistics table saved as 'statistics_table.csv'.")
 
 
-def generate_plots(df, output_folder):
+def generate_plots(df, output_folder, upper_limit, bins):
     # Plot histograms for cell lengths (a, b, c) and save them
     plt.figure(figsize=(8, 3))
     for i, param in enumerate(['a', 'b', 'c']):
@@ -182,6 +192,50 @@ def generate_plots(df, output_folder):
     plt.ylabel('Generated Volume (Å³)')
     plt.savefig(os.path.join(output_folder, 'implied_vs_generated_volume_scatterplot.png'))
     plt.close()
+
+    # Plot sequence length distribution with comparisons to consistency checks
+    fig, axes = plt.subplots(5,1,figsize=(10, 10))
+    # Apply upper limit
+    if upper_limit is not None:
+        df['seq_len'] = np.clip(df['seq_len'], None, upper_limit)
+
+    # Define nummber of bins
+    min_seq_len = df['seq_len'].min()
+    max_seq_len = df['seq_len'].max()
+    bin_edges = np.linspace(min_seq_len, max_seq_len, bins)
+    
+    # Base sequence length histogram
+    sns.histplot(df['seq_len'], kde=True, bins=bin_edges, stat='density', color='blue', label='All Sequences', ax=axes[0])
+    sns.histplot(df[df['valid']]['seq_len'], kde=True, bins=bin_edges, stat='density', label='Valid Sequences', ax=axes[0])
+    
+    # Formula consistent distribution
+    sns.histplot(df['seq_len'], kde=True, bins=bin_edges, stat='density', color='blue', label='All Sequences', ax=axes[1])
+    sns.histplot(df[df['syntax_validity.formula_consistency']]['seq_len'], kde=True, bins=bin_edges, stat='density', color='green', label='Formula Consistent', ax=axes[1])
+    
+    # Space group consistent distribution
+    sns.histplot(df['seq_len'], kde=True, bins=bin_edges, stat='density', color='blue', label='All Sequences', ax=axes[2])
+    sns.histplot(df[df['syntax_validity.space_group_consistency']]['seq_len'], kde=True, bins=bin_edges, stat='density', color='red', label='Space Group Consistent', ax=axes[2])
+    
+    # Atom site multiplicity consistent distribution
+    sns.histplot(df['seq_len'], kde=True, bins=bin_edges, stat='density', color='blue', label='All Sequences', ax=axes[3])
+    sns.histplot(df[df['syntax_validity.atom_site_multiplicity']]['seq_len'], kde=True, bins=bin_edges, stat='density',color='purple', label='Atom Site Multiplicity Consistent', ax=axes[3])
+    
+    # Bond length acceptability consistent distribution
+    sns.histplot(df['seq_len'], kde=True, bins=bin_edges, stat='density', color='blue', label='All Sequences', ax=axes[4])
+    sns.histplot(df[df['syntax_validity.bond_length_acceptability']]['seq_len'], kde=True, bins=bin_edges, stat='density', color='orange', label='Bond Length Acceptable', ax=axes[4])
+    
+    # Customizing the plot
+    fig.suptitle('Sequence Length Distribution Comparison')
+
+    for ax in axes:
+        ax.set_xlabel('Sequence Length')
+        ax.set_ylabel('Density')
+        ax.legend()
+    
+    # Save the plot
+    fig.tight_layout()
+    fig.savefig(os.path.join(output_folder, 'sequence_length_distribution_comparison.png'))
+    plt.close(fig)
     
     print("Statistic plots saved.")
 
@@ -190,11 +244,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process a Parquet file, generate plots and statistics, and save them to a specified folder.')
 
     # Add arguments for parquet file path and output folder
-    parser.add_argument('--eval_file_path', required=True, type=str, help='Path to the eval file.')
-    parser.add_argument('--output_folder', required=True, type=str, help='Directory where the plots and statistics will be saved.')
+    parser.add_argument('--eval-file-path', required=True, type=str, help='Path to the eval file.')
+    parser.add_argument('--output-folder', required=True, type=str, help='Directory where the plots and statistics will be saved.')
+    parser.add_argument('--upper-limit', type=int, help="Upper limit on histograms of sequence lengths vs. validity")
+    parser.add_argument('--bins', type=int, default=100, help="Bins for histogram of sequence lengths vs. validity")
 
     # Parse the arguments
     args = parser.parse_args()
 
     # Call the function to process data, generate plots, and save statistics
-    process_and_save_plots_and_stats(args.eval_file_path, args.output_folder)
+    process_and_save_plots_and_stats(args.eval_file_path, args.output_folder, args.upper_limit, args.bins)
