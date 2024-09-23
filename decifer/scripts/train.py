@@ -25,7 +25,7 @@ from tqdm.auto import tqdm
 from omegaconf import DictConfig, OmegaConf
 
 from decifer import (
-    UnconditionedDecifer,
+    Decifer,
     DeciferConfig,
     Tokenizer,
     HDF5Dataset,
@@ -64,6 +64,7 @@ class TrainConfig:
     n_embd: int = 768
     dropout: float = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
     bias: bool = False  # do we use bias inside LayerNorm and Linear layers?
+    condition_with_emb: bool = False
 
     # AdamW optimizer
     learning_rate: float = 6e-4  # max learning rate
@@ -136,9 +137,9 @@ if __name__ == "__main__":
 
     # Initialise datasets/loaders 
     # TODO Depending on the task, load different labels
-    train_dataset = HDF5Dataset(os.path.join(C.dataset, "hdf5/train_dataset.h5"), ["cif_tokenized"], block_size=C.block_size)
-    val_dataset = HDF5Dataset(os.path.join(C.dataset, "hdf5/val_dataset.h5"), ["cif_tokenized"], block_size=C.block_size)
-    test_dataset = HDF5Dataset(os.path.join(C.dataset, "hdf5/test_dataset.h5"), ["cif_tokenized"], block_size=C.block_size)
+    train_dataset = HDF5Dataset(os.path.join(C.dataset, "hdf5/train_dataset.h5"), ["cif_tokenized", "xrd_cont_y"], block_size=C.block_size)
+    val_dataset = HDF5Dataset(os.path.join(C.dataset, "hdf5/val_dataset.h5"), ["cif_tokenized", "xrd_cont_y"], block_size=C.block_size)
+    test_dataset = HDF5Dataset(os.path.join(C.dataset, "hdf5/test_dataset.h5"), ["cif_tokenized", "xrd_cont_y"], block_size=C.block_size)
 
     # Random batching sampler, train
     train_sampler = SubsetRandomSampler(range(len(train_dataset)))
@@ -162,8 +163,6 @@ if __name__ == "__main__":
         "test": test_dataloader,
     }
 
-    Decifer = UnconditionedDecifer # TODO Depending on task
-
     # Initialize
     iter_num = 0
     best_val_loss = float('inf')
@@ -182,7 +181,8 @@ if __name__ == "__main__":
         vocab_size=C.vocab_size,
         dropout=C.dropout,
         use_lora=C.use_lora,
-        lora_rank=C.lora_rank
+        lora_rank=C.lora_rank,
+        condition_with_emb=C.condition_with_emb,
     )
 
     if C.init_from == "scratch":
@@ -273,7 +273,7 @@ if __name__ == "__main__":
         unoptimized_model = model
         model = torch.compile(model)  # requires PyTorch 2.0
 
-    def get_batch(split):
+    def get_batch(split, conditioning=False):
 
         # Retrieve dataloader
         dataloader = dataloaders[split]
@@ -294,16 +294,23 @@ if __name__ == "__main__":
         X = data[:,:-1]
         Y = data[:,1:] # Shifted
 
+        if conditioning:
+            cond = batch[1]
+        else:
+            cond = None
+
         # Send to device (CUDA/CPU)
         if C.device == "cuda":
             X = X.pin_memory().to(C.device, non_blocking=True)
             Y = Y.pin_memory().to(C.device, non_blocking=True)
+            cond = cond.pin_memory().to(C.device, non_blocking=True) if conditioning else cond
         else:
             X = X.pin_memory().to(C.device)
             Y = Y.pin_memory().to(C.device)
+            cond = cond.pin_memory().to(C.device) if conditioning else cond
 
         # Return the batch with or without sample indices
-        return X, Y
+        return X, Y, cond
 
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
@@ -313,9 +320,9 @@ if __name__ == "__main__":
         for split, eval_iters in [("train", C.eval_iters_train), ("val", C.eval_iters_val)]:
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                X, Y = get_batch(split)
+                X, Y, cond = get_batch(split)
                 with ctx:
-                    logits, loss = model(X, Y)
+                    logits, loss = model(X, cond, Y)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         model.train()
@@ -336,7 +343,7 @@ if __name__ == "__main__":
         return C.min_lr + coeff * (C.learning_rate - C.min_lr)
 
     # training loop
-    X, Y = get_batch("train")
+    X, Y, cond = get_batch("train")
     t0 = time.time()
     local_iter_num = 0  # number of iterations in the lifetime of this process
     while True:
@@ -401,9 +408,9 @@ if __name__ == "__main__":
         small_step_pbar = tqdm(desc='Accumulating losses...', total=C.gradient_accumulation_steps, leave=False, disable=not C.accumulative_pbar)
         for micro_step in range(C.gradient_accumulation_steps):
             with ctx:
-                logits, loss = model(X, Y)
+                logits, loss = model(X, cond, Y)
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            X, Y = get_batch("train")
+            X, Y, cond = get_batch("train")
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
             small_step_pbar.update(1)

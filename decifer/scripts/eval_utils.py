@@ -19,7 +19,7 @@ from .cif_utils import (
 )
 
 from .tokenizer import Tokenizer
-from ..models import DeciferConfig, UnconditionedDecifer
+from ..models import DeciferConfig, Decifer
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -396,7 +396,7 @@ def load_model_from_checkpoint(ckpt_path, device):
     
     # Load the model and checkpoint
     model_config = DeciferConfig(**model_args)
-    model = UnconditionedDecifer(model_config).to(device)
+    model = Decifer(model_config).to(device)
     model.device = device
     
     # Fix the keys of the state dict per CrystaLLM
