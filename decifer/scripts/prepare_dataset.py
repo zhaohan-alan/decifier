@@ -16,8 +16,10 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from glob import glob
 import multiprocessing as mp
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool, cpu_count, TimeoutError
 import numpy as np
+import time
+import random
 
 import h5py
 import gzip
@@ -220,10 +222,16 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
 
     # Parallel processing of CIF files using multiprocessing
     num_workers = min(cpu_count(), len(cifs))  # Use available CPU cores, limited to number of files
+    results = []
     with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-        results = list(tqdm(pool.imap_unordered(
-            process_single_cif, tasks
-        ), total=len(cifs), desc="Preprocessing CIFs...", leave=False))
+        results_iterator = pool.imap_unordered(process_single_cif, tasks)
+        
+        for _ in tqdm(range(len(tasks)), total=len(cifs), desc="Preprocessing CIFs...", leave=False):
+            try:
+                result = results_iterator.next(timeout = 60)
+                results.append(result)
+            except TimeoutError as e:
+                continue
         
     # Stop log listener and flush
     listener.stop()
@@ -388,10 +396,16 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
 
         # Parallel processing of CIF files using multiprocessing
         num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
+        results = []
         with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-            results = list(tqdm(pool.imap_unordered(
-                generate_single_xrd, tasks
-            ), total=len(data), desc="Calculating XRD...", leave=False))
+            results_iterator = pool.imap_unordered(generate_single_xrd, tasks)
+            
+            for _ in tqdm(range(len(tasks)), total=len(data), desc="Calculating XRD...", leave=False):
+                try:
+                    result = results_iterator.next(timeout = 60)
+                    results.append(result)
+                except TimeoutError as e:
+                    continue
 
         # Stop log listener and flush
         listener.stop()
@@ -489,10 +503,16 @@ def tokenize_datasets(data_dir, debug_max=None, debug=False):
 
         # Parallel processing of CIF files using multiprocessing
         num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
+        results = []
         with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-            results = list(tqdm(pool.imap_unordered(
-                tokenize_single_datum, tasks
-            ), total=len(data), desc="Tokenizing CIF and XRD...", leave=False))
+            results_iterator = pool.imap_unordered(tokenize_single_datum, tasks)
+            
+            for _ in tqdm(range(len(tasks)), total=len(data), desc="Tokenizing CIFs and XRDs...", leave=False):
+                try:
+                    result = results_iterator.next(timeout = 60)
+                    results.append(result)
+                except TimeoutError as e:
+                    continue
         
         # Stop log listener and flush
         listener.stop()
