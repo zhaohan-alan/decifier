@@ -1,5 +1,5 @@
-out_dir: 'uncon_trained_models/chili100k_25M_4096'
-dataset: 'data/chili100k/full_dataset'
+out_dir: 'cond_trained_models/crystal500k_25M_2048_cond_emb'
+dataset: 'data/crystallm/500k'
 
 eval_interval: 10  # how often to evaluate against the validation set
 eval_iters_train: 200
@@ -18,8 +18,8 @@ always_save_checkpoint: True
 # whether to validate with a validation set
 validate: True
 
-batch_size: 16
-block_size: 4096
+batch_size: 32
+block_size: 2048
 
 n_layer: 8
 n_head: 8
@@ -34,4 +34,6 @@ beta2: 0.99
 
 warmup_iters: 10
 
-early_stopping_patience: 8
+early_stopping_patience: 5
+
+condition_with_emb: True
