@@ -230,6 +230,7 @@ def generate_plots(df, output_folder, upper_limit, bins):
     for ax in axes:
         ax.set_xlabel('Sequence Length')
         ax.set_ylabel('Density')
+        ax.set_yscale('log')
         ax.legend()
     
     # Save the plot
