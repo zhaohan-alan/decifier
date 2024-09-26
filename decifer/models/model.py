@@ -95,7 +95,7 @@ class CausalSelfAttention(nn.Module):
         self.masked_bias = torch.tensor(-1e4)
 
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, attention_bias: Tensor = None) -> Tensor:
         """
         Applies causal self-attention to the given tensor,
         with a mask to prevent attention to future positions.
@@ -122,11 +122,20 @@ class CausalSelfAttention(nn.Module):
 
         #causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout, is_causal=True)
+            if attention_bias is not None:
+                # Expand attention_bias to match the number of heads
+                attention_bias = attention_bias.unsqueeze(1) # Shape (B, 1, T, T)
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=attention_bias, dropout_p=self.dropout
+            )
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float("-inf"))
+            if attention_bias is not None:
+                attention_bias = attention_bias.unsqueeze(1) # Shap (B, 1, T, T)
+                att = att + attention_bias
+            else:
+                att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -254,19 +263,92 @@ class Decifer(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
     
-    def forward(self, idx, cond_vec=None, targets=None):
+    def forward(self, idx, cond_vec=None, targets=None, start_indices_batch=None,):
         device = idx.device
         b, t = idx.size()
-        if cond_vec is not None: t=t+1
+        ptdtype = self.transformer.wte.weight.dtype
+
+        #if cond_vec is not None: t=t+1
+
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0)  # shape (1, t+1), pos_idx -1 for conditioning input
+
+        positions = torch.arange(t, device=device).unsqueeze(0).expand(b, t) # Shape (b, t)
+
+        if start_indices_batch is not None:
+            # Init start_mask
+            start_mask = torch.zeros((b, t), dtype=torch.long, device=device)
+
+            # Collect valid start indeices and batch indices
+            start_indices_list = []
+            batch_indices_list = []
+            for i, start_indices in enumerate(start_indices_batch):
+                valid_indices = start_indices[(start_indices >= 0) & (start_indices < t)]
+                start_indices_list.append(valid_indices)
+                batch_indices_list.append(torch.full_like(valid_indices, i))
+
+            # Concatenate all valid start indices and batch indices
+            if start_indices_list:
+                start_indices_flat = torch.cat(start_indices_list)
+                batch_indices_flat = torch.cat(batch_indices_list)
+
+                # Set start mask
+                start_mask[batch_indices_flat, start_indices_flat] = 1
+            else:
+                # If no valid start indices, default to zeros
+                pass
+
+            #start_indices_flat = start_indices_batch.view(-1)  # Shape: (b * max_num_starts)
+            #batch_indices = torch.arange(b, device=device).unsqueeze(1).expand(b, start_indices_batch.size(1)).reshape(-1)  # Shape: (b * max_num_starts)
+
+            # Mask out invalid indices (assuming padding with -1)
+            #valid_mask = (start_indices_flat >= 0) & (start_indices_flat < t)
+            #valid_start_indices = start_indices_flat[valid_mask]
+            #valid_batch_indices = batch_indices[valid_mask]
+
+            # Set start_mask
+            #start_mask[valid_batch_indices, valid_start_indices] = 1
+
+            # Compute group IDs
+            group_ids = torch.cumsum(start_mask, dim=1)  # Shape: (b, t)
+
+            # Compute last start positions
+            start_positions = torch.where(start_mask == 1, positions, torch.tensor(0, device=device))
+            last_start_positions, _ = torch.cummax(start_positions, dim=1)
+
+            # Compute positions within each group
+            positions_in_group = positions - last_start_positions
+
+            # Create attention mask
+            attention_mask = (group_ids.unsqueeze(2) == group_ids.unsqueeze(1)) & (positions.unsqueeze(2) >= positions.unsqueeze(1))
+            # Convert to additive attention bias
+            attention_bias = torch.zeros_like(attention_mask, dtype=ptdtype)
+            attention_bias.masked_fill_(~attention_mask, float('-inf'))
+            attention_bias = attention_bias.unsqueeze(1)  # Shape: (b, 1, t, t)
+        else:
+            positions_in_group = positions
+            attention_bias = None
+
+        #pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0)  # shape (1, t+1), pos_idx -1 for conditioning input
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (1, t, n_embd)
+        pos_emb = self.transformer.wpe(positions_in_group)  # position embeddings of shape (1, t, n_embd)
+
+        # Conditioning
         if cond_vec is not None:
             cond_emb = self.transformer.cond_embedding(cond_vec).unsqueeze(1) # shape (b, 1, n_embd)
             tok_emb = torch.cat([cond_emd, tok_emb], dim=1)
+            pos_emb = torch.cat([torch.zeros_like(cond_emb), pos_emb], dim=1)
+            t = t + 1 # Update sequence length
+
+            # Update attention mask
+            if attention_bias is not None:
+                attention_bias = F.pad(attention_bias, (1,0,1,0), value=0)
+                attention_bias[:,:,0,:] = float('-inf') # Prevent cond token from attending to future tokens
+                attention_bias[:,:,:,0] = 0 # Allows tokens to attend to cond token
+
+            positions_in_group = F.pad(positions_in_group, (1,0), value=0)
+            t = positions_in_group.size(1)
 
         x = self.transformer.drop(tok_emb + pos_emb)
 
