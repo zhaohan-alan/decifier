@@ -273,13 +273,18 @@ if __name__ == "__main__":
         unoptimized_model = model
         model = torch.compile(model)  # requires PyTorch 2.0
 
+    # Initialize a dictionary to keep data iterators per split
+    data_iters = {}
+
     def get_batch(split, conditioning=False):
 
         # Retrieve dataloader
         dataloader = dataloaders[split]
 
-        # Initialise the dataloader iterator
-        data_iter = iter(dataloader)
+        if split not in data_iters:
+            # Initialise the dataloader iterator
+            data_iters[split] = iter(dataloader)
+        data_iter = data_iters[split]
 
         # Get the next batch
         try:
