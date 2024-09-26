@@ -36,3 +36,4 @@ warmup_iters: 10
 early_stopping_patience: 5
 
 condition_with_emb: False
+boundary_masking: True
