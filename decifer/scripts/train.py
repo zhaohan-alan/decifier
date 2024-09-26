@@ -49,6 +49,7 @@ class TrainConfig:
     batch_size: int = 64  # if gradient_accumulation_steps > 1, this is the micro-batch size
     block_size: int = 2048  # context of up to `block_size` previous characters
     accumulative_pbar: bool = False
+    packing: bool = True
 
     # LoRA
     use_lora: bool = False
@@ -275,8 +276,207 @@ if __name__ == "__main__":
 
     # Initialize a dictionary to keep data iterators per split
     data_iters = {}
+    tokenizer = Tokenizer()
 
-    def get_batch(split, conditioning=False):
+    def get_batch_packed(split, conditioning=False):
+        # Retrieve the dataloader and initialize the iterator
+        dataloader = dataloaders[split]
+        if split not in data_iters:
+            data_iters[split] = iter(dataloader)
+        data_iter = data_iters[split]
+
+        # Token IDs for sequence start and padding
+        start_token_id = tokenizer.token_to_id["data_"]
+        pad_token_id = tokenizer.padding_id
+        block_size = C.block_size
+        batch_size = C.batch_size
+
+        # Initialize lists to store packed sequences and start indices
+        packed_sequences = []
+        start_indices_list = []
+        cond_list = [] if conditioning else None
+
+        # Collect sequences until we have enough to fill the batch
+        total_sequences = []
+        total_lengths = []
+        while len(total_sequences) < batch_size:
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(dataloader)
+                data_iters[split] = data_iter
+                batch = next(data_iter)
+
+            sequences = batch[0]  # Assuming batch[0] contains sequences
+            if conditioning:
+                cond_batch = batch[1]
+
+            # Remove padding tokens (assuming padding token is 0)
+            sequences = [seq[seq != pad_token_id] for seq in sequences]
+
+            total_sequences.extend(sequences)
+            if conditioning:
+                cond_list.extend(cond_batch)
+
+        # Now pack sequences into batches without loops
+        # Concatenate all sequences into one long tensor
+        all_tokens = torch.cat(total_sequences)
+
+        # Compute the lengths of sequences
+        seq_lengths = torch.tensor([len(seq) for seq in total_sequences])
+
+        # Compute cumulative lengths to find sequence boundaries
+        seq_cum_lengths = torch.cumsum(seq_lengths, dim=0)
+
+        # Calculate how many full blocks we can get from the concatenated tokens
+        num_full_blocks = all_tokens.size(0) // block_size
+        num_batches = min(batch_size, num_full_blocks)
+
+        # Truncate the tokens to fit into an integer number of blocks
+        total_tokens = all_tokens[:num_batches * block_size]
+
+        # Reshape the tokens into (num_batches, block_size)
+        total_tokens = total_tokens.view(num_batches, block_size)
+
+        # Create input (X) and target (Y) sequences
+        X_batch = total_tokens[:, :-1]
+        Y_batch = total_tokens[:, 1:]
+
+        # Find start indices within each batch
+        start_token_mask = X_batch == start_token_id
+        start_indices = start_token_mask.nonzero(as_tuple=False)
+
+        # Organize start indices per batch item
+        start_indices_list = []
+        for i in range(num_batches):
+            indices = start_indices[start_indices[:, 0] == i][:, 1]
+            start_indices_list.append(indices)
+
+        # Handle conditioning data if required
+        if conditioning and cond_list:
+            # Collect conditioning data corresponding to sequences included
+            cond_list = cond_list[:seq_cum_lengths.searchsorted(num_batches * block_size)]
+            cond_batch = torch.stack(cond_list).to(C.device)
+        else:
+            cond_batch = None
+
+        # Move data to the appropriate device
+        X_batch = X_batch.to(C.device)
+        Y_batch = Y_batch.to(C.device)
+
+        # Return the batch data and start indices
+        return X_batch, Y_batch, cond_batch, start_indices_list
+
+    def get_batch_packed_slow(split, conditioning=False):
+        
+        # Retrieve dataloader
+        dataloader = dataloaders[split]
+
+        if split not in data_iters:
+            # Initialise the dataloader iterator
+            data_iters[split] = iter(dataloader)
+        data_iter = data_iters[split]
+
+        # Token IDs for sequence start and padding
+        start_token_id = tokenizer.token_to_id["data_"]
+        pad_token_id = tokenizer.padding_id
+        
+        max_length = C.block_size
+        batch_size = C.batch_size
+
+        # Lists to store the packed sequences and start indices
+        X_list = []
+        Y_list = []
+        start_indices_list = []
+        cond_list = [] if conditioning else None
+
+        # For each item in the batch
+        for batch_idx in range(batch_size):
+            packed_sequence = []
+            start_indices = []
+            position = 0 # Current position in the packed sequence
+
+            # Keep adding sequences until we reach the maximum length
+            while position < max_length:
+        
+                try:
+                    batch = next(data_iter)
+                except StopIteration:
+                    # Reset the iterator if we run out of data
+                    data_iter = iter(dataloader)
+                    data_iters[split] = data_iter
+                    batch = next(data_iter)
+
+                # Extract sequences and conditioning
+                sequences = batch[0]
+                if conditioning:
+                    cond_batch = batch[1]
+
+                # Iterate over each sequence in the batch
+                for i, seq in enumerate(sequences):
+                    # Remove the padding
+                    seq = seq[seq != pad_token_id]
+
+                    # Check if adding the sequence exceeds the max length
+                    if position + len(seq) > max_length:
+                        if position == 0:
+                            # Sequence is too long; truncate
+                            seq = seq[:max_length]
+                        else:
+                            # Finish the packed sequences if there's no space
+                            break
+
+                    # Record the start iindex
+                    #start_positions = (seq == start_token_id).nonzero(as_tuple=True)[0] + position
+                    start_indices.append(position)
+
+                    # Add the sequence
+                    packed_sequence.append(seq)
+                    position += len(seq)
+
+                    # Collect conditioning data if requested
+                    if conditioning:
+                        if len(cond_list) <= batch_idx:
+                            cond_list.append([])
+                        cond_list[batch_idx].append(cond_batch[i])
+                        
+                    # Break if maximum length is reached
+                    if position >= max_length:
+                        break
+
+                # Break if maximum length is reached
+                if position >= max_length:
+                    break
+
+            # Concatenate the packed sequence
+            if packed_sequence:
+                packed_sequence = torch.cat(packed_sequence)
+            else :
+                # Handle case where no sequences were added
+                packed_sequence = torch.tensor([], dtype=torch.long)
+
+            # Create (input) X and (target) Y sequences
+            X = packed_sequence[:-1]
+            Y = packed_sequence[1:]
+
+            X_list.append(X)
+            Y_list.append(Y)
+            start_indices_list.append(start_indices)
+
+        # Stack the packed
+        X_batch = torch.stack(X_list).to(C.device)
+        Y_batch = torch.stack(X_list).to(C.device)
+
+        # Handle Conditioning # TODO
+        #if conditioning and cond_list:
+            # Flatten and stack
+
+        cond_batch = None
+
+        # Return
+        return X_batch, Y_batch, cond_batch, start_indices_list
+
+    def get_batch_padded(split, conditioning=False):
 
         # Retrieve dataloader
         dataloader = dataloaders[split]
@@ -291,8 +491,8 @@ if __name__ == "__main__":
             batch = next(data_iter)
         except StopIteration:
             # Reset the iterator if we run out of data
-            data_iterrator = iter(dataloader)
-            batch = next(dataloader)
+            data_iter = iter(dataloader)
+            batch = next(data_iter)
 
         # Split the batch into X and Y
         data = batch[0]
@@ -315,7 +515,7 @@ if __name__ == "__main__":
             cond = cond.pin_memory().to(C.device) if conditioning else cond
 
         # Return the batch with or without sample indices
-        return X, Y, cond
+        return X, Y, cond, None
 
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
@@ -325,7 +525,7 @@ if __name__ == "__main__":
         for split, eval_iters in [("train", C.eval_iters_train), ("val", C.eval_iters_val)]:
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                X, Y, cond = get_batch(split)
+                X, Y, cond, start_indices_list = get_batch(split)
                 with ctx:
                     logits, loss = model(X, cond, Y)
                 losses[k] = loss.item()
@@ -347,8 +547,14 @@ if __name__ == "__main__":
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
         return C.min_lr + coeff * (C.learning_rate - C.min_lr)
 
+    # Set baching sheme
+    if C.packing:
+        get_batch = get_batch_packed
+    else:
+        get_batch = get_batch_padded
+
     # training loop
-    X, Y, cond = get_batch("train")
+    X, Y, cond, start_indices_list = get_batch("train")
     t0 = time.time()
     local_iter_num = 0  # number of iterations in the lifetime of this process
     while True:
@@ -415,7 +621,7 @@ if __name__ == "__main__":
             with ctx:
                 logits, loss = model(X, cond, Y)
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            X, Y, cond = get_batch("train")
+            X, Y, cond, start_indices_list = get_batch("train")
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
             small_step_pbar.update(1)
