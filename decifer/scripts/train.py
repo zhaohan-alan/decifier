@@ -66,6 +66,7 @@ class TrainConfig:
     dropout: float = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
     bias: bool = False  # do we use bias inside LayerNorm and Linear layers?
     condition_with_emb: bool = False
+    boundary_masking: bool = True
 
     # AdamW optimizer
     learning_rate: float = 6e-4  # max learning rate
@@ -184,6 +185,7 @@ if __name__ == "__main__":
         use_lora=C.use_lora,
         lora_rank=C.lora_rank,
         condition_with_emb=C.condition_with_emb,
+        boundary_masking=C.boundary_masking,
     )
 
     if C.init_from == "scratch":

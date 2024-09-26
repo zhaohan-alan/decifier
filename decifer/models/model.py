@@ -46,6 +46,7 @@ class DeciferConfig:
     lora_mlp: bool = False
     lora_proj: bool = False
     condition_with_emb: bool = False
+    boundary_masking: bool = True
 
 class LayerNorm(nn.Module):
 
@@ -125,9 +126,13 @@ class CausalSelfAttention(nn.Module):
             if attention_bias is not None:
                 # Expand attention_bias to match the number of heads
                 attention_bias = attention_bias.unsqueeze(1) # Shape (B, 1, T, T)
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, attn_mask=attention_bias, dropout_p=self.dropout
-            )
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q, k, v, attn_mask=attention_bias, dropout_p=self.dropout
+                )
+            else:
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q, k, v, attn_mask=None, dropout_p=self.dropout, is_causal=True,
+                )
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
@@ -268,13 +273,11 @@ class Decifer(nn.Module):
         b, t = idx.size()
         ptdtype = self.transformer.wte.weight.dtype
 
-        #if cond_vec is not None: t=t+1
-
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
         positions = torch.arange(t, device=device).unsqueeze(0).expand(b, t) # Shape (b, t)
 
-        if start_indices_batch is not None:
+        if start_indices_batch is not None and self.config.boundary_masking:
             # Init start_mask
             start_mask = torch.zeros((b, t), dtype=torch.long, device=device)
 
@@ -334,8 +337,6 @@ class Decifer(nn.Module):
         #    plt.close(fig)
         #    for p in positions_in_group[i]:
         #        print(p)
-
-        #print()
         #print(len())
 
         # Conditioning
