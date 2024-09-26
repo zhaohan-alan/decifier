@@ -37,6 +37,7 @@ from decifer import (
     extract_formula_units,
     replace_data_formula_with_nonreduced_formula,
     round_numbers,
+    add_atomic_props_block,
 )
 
 import warnings
@@ -168,6 +169,9 @@ def process_single_cif(args):
         # Number precision rounding
         cif_content = round_numbers(cif_content, decimal_places)
         cif_content = format_occupancies(cif_content, decimal_places)
+
+        # Add atomic props block
+        cif_content = add_atomic_props_block(cif_content)
 
         return (name, strat_key, cif_content)
     except Exception as e:
@@ -453,6 +457,7 @@ def tokenize_single_datum(args):
     cif_content = remove_cif_header(cif_content)
     cif_content_reduced = replace_data_formula_with_nonreduced_formula(cif_content)
     cif_content_nosym = replace_symmetry_loop_with_P1(cif_content_reduced)
+    print(cif_content_nosym)
 
     # Initialise Tokenizer
     tokenizer = Tokenizer()
