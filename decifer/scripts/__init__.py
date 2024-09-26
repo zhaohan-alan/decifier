@@ -15,6 +15,8 @@ from .cif_utils import (
     round_numbers,
     get_unit_cell_volume,
     extract_volume,
+    get_atomic_props_block,
+    add_atomic_props_block,
 )
 
 from .dataset import (

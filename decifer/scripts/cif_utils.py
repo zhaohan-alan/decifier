@@ -8,6 +8,81 @@ from pymatgen.io.cif import CifBlock
 from pymatgen.symmetry.groups import SpaceGroup
 from pymatgen.core.operations import SymmOp
 
+def get_atomic_props_block(composition, oxi=False):
+    noble_vdw_radii = {
+        "He": 1.40,
+        "Ne": 1.54,
+        "Ar": 1.88,
+        "Kr": 2.02,
+        "Xe": 2.16,
+        "Rn": 2.20,
+    }
+
+    allen_electronegativity = {
+        "He": 4.16,
+        "Ne": 4.79,
+        "Ar": 3.24,
+    }
+
+    def _format(val):
+        return f"{float(val): .4f}"
+
+    def _format_X(elem):
+        if math.isnan(elem.X) and str(elem) in allen_electronegativity:
+            return allen_electronegativity[str(elem)]
+        return _format(elem.X)
+
+    def _format_radius(elem):
+        if elem.atomic_radius is None and str(elem) in noble_vdw_radii:
+            return noble_vdw_radii[str(elem)]
+        return _format(elem.atomic_radius)
+
+    props = {str(el): (_format_X(el), _format_radius(el), _format(el.average_ionic_radius))
+             for el in sorted(composition.elements)}
+
+    data = {}
+    data["_atom_type_symbol"] = list(props)
+    data["_atom_type_electronegativity"] = [v[0] for v in props.values()]
+    data["_atom_type_radius"] = [v[1] for v in props.values()]
+    # use the average ionic radius
+    data["_atom_type_ionic_radius"] = [v[2] for v in props.values()]
+
+    loop_vals = [
+        "_atom_type_symbol",
+        "_atom_type_electronegativity",
+        "_atom_type_radius",
+        "_atom_type_ionic_radius"
+    ]
+
+    if oxi:
+        symbol_to_oxinum = {str(el): (float(el.oxi_state), _format(el.ionic_radius)) for el in sorted(composition.elements)}
+        data["_atom_type_oxidation_number"] = [v[0] for v in symbol_to_oxinum.values()]
+        # if we know the oxidation state of the element, use the ionic radius for the given oxidation state
+        data["_atom_type_ionic_radius"] = [v[1] for v in symbol_to_oxinum.values()]
+        loop_vals.append("_atom_type_oxidation_number")
+
+    loops = [loop_vals]
+
+    return str(CifBlock(data, loops, "")).replace("data_\n", "")
+
+def add_atomic_props_block(cif_str, oxi=False):
+    comp = Composition(extract_formula_nonreduced(cif_str))
+
+    block = get_atomic_props_block(composition=comp, oxi=oxi)
+
+    # the hypothesis is that the atomic properties should be the first thing
+    #  that the model must learn to associate with the composition, since
+    #  they will determine so much of what follows in the file
+    pattern = r"_symmetry_space_group_name_H-M"
+    match = re.search(pattern, cif_str)
+
+    if match:
+        start_pos = match.start()
+        modified_cif = cif_str[:start_pos] + block + "\n" + cif_str[start_pos:]
+        return modified_cif
+    else:
+        raise Exception(f"Pattern not found: {cif_str}")
+
 def replace_symmetry_loop_with_P1(cif_str):
     start = cif_str.find("_symmetry_equiv_pos_site_id")
     end = cif_str.find("loop_", start+1)
