@@ -297,17 +297,6 @@ class Decifer(nn.Module):
                 # If no valid start indices, default to zeros
                 pass
 
-            #start_indices_flat = start_indices_batch.view(-1)  # Shape: (b * max_num_starts)
-            #batch_indices = torch.arange(b, device=device).unsqueeze(1).expand(b, start_indices_batch.size(1)).reshape(-1)  # Shape: (b * max_num_starts)
-
-            # Mask out invalid indices (assuming padding with -1)
-            #valid_mask = (start_indices_flat >= 0) & (start_indices_flat < t)
-            #valid_start_indices = start_indices_flat[valid_mask]
-            #valid_batch_indices = batch_indices[valid_mask]
-
-            # Set start_mask
-            #start_mask[valid_batch_indices, valid_start_indices] = 1
-
             # Compute group IDs
             group_ids = torch.cumsum(start_mask, dim=1)  # Shape: (b, t)
 
@@ -333,6 +322,21 @@ class Decifer(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(positions_in_group)  # position embeddings of shape (1, t, n_embd)
+
+        #import matplotlib.pyplot as plt
+        #import seaborn as sns
+
+        #for i in range(b):
+        #    fig, ax = plt.subplots()
+        #    sns.heatmap(attention_bias[i][0].cpu().numpy(), cmap='viridis', cbar=True, ax=ax)
+        #    ax.invert_yaxis()
+        #    fig.savefig(f'attention_mask_{i}.png')
+        #    plt.close(fig)
+        #    for p in positions_in_group[i]:
+        #        print(p)
+
+        #print()
+        #print(len())
 
         # Conditioning
         if cond_vec is not None:

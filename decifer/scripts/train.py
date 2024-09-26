@@ -288,6 +288,7 @@ if __name__ == "__main__":
         # Token IDs for sequence start and padding
         start_token_id = tokenizer.token_to_id["data_"]
         pad_token_id = tokenizer.padding_id
+        newline_id = tokenizer.token_to_id["\n"]
         block_size = C.block_size
         batch_size = C.batch_size
 
@@ -312,7 +313,7 @@ if __name__ == "__main__":
                 cond_batch = batch[1]
 
             # Remove padding tokens (assuming padding token is 0)
-            sequences = [seq[seq != pad_token_id] for seq in sequences]
+            sequences = [torch.cat([seq[seq != pad_token_id], torch.tensor([newline_id, newline_id], dtype=torch.long)]) for seq in sequences]
 
             total_sequences.extend(sequences)
             if conditioning:
