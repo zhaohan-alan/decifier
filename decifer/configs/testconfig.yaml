@@ -16,13 +16,13 @@ always_save_checkpoint: True
 # whether to validate with a validation set
 validate: True
 
-dataset: 'data/chili100k/full_dataset'
+dataset: 'data/crystallm/5k'
 batch_size: 8
 block_size: 1024
 
-n_layer: 2
-n_head: 2
-n_embd: 128
+n_layer: 4
+n_head: 4
+n_embd: 512
 dropout: 0.1
 
 learning_rate: 1e-3
