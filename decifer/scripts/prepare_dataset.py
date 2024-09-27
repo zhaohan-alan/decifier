@@ -132,7 +132,7 @@ def process_single_cif(args):
     Returns:
         tuple: (strat_key, cif_content) if processing is successful, else None.
     """
-    cif, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug = args
+    cif, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, processed_files_dir = args
     logger = logging.getLogger()
     try:
         # Make structure
@@ -172,6 +172,14 @@ def process_single_cif(args):
 
         # Add atomic props block
         cif_content = add_atomic_props_block(cif_content)
+
+        # Save output to pickle file
+        output_data = (name, strat_key, cif_content)
+        output_filename = os.path.join(processed_files_dir, name + '.pkl')
+        temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
+        with open(temp_filename, 'wb') as f:
+            pickle.dump(output_data, f)
+        os.rename(temp_filename, output_filename) # File is secure, renaming
 
         return (name, strat_key, cif_content)
     except Exception as e:
@@ -217,32 +225,55 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     pre_dir = os.path.join(data_dir, "preprocessed")
     os.makedirs(pre_dir, exist_ok=True)
 
+    # Directory for individual files
+    processed_files_dir = os.path.join(pre_dir, "preprocessed_files")
+    os.makedirs(processed_files_dir, exist_ok=True)
+
+    # Check which files have already been processed
+    existing_processed_files = set(os.path.basename(f) for f in glob(os.path.join(processed_files_dir, "*.pkl")))
+
     # Prepare arguments for parallel processing
-    tasks = [(path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug) for path in cifs]
-    
-    # Create a queue for logging and start the logging process
-    log_queue = mp.Queue()
-    listener = log_listener(log_queue, pre_dir)
+    tasks = []
+    for path in cifs:
+        if isinstance(path, str):
+            name = os.path.basename(path)
+        elif isinstance(path, tuple):
+            name = path[0]
+        else:
+            continue
+        output_filename = name + '.pkl'
+        if output_filename not in existing_processed_files:
+            tasks.append((path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, processed_files_dir))
 
-    # Parallel processing of CIF files using multiprocessing
-    num_workers = min(cpu_count(), len(cifs))  # Use available CPU cores, limited to number of files
-    results = []
-    with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-        results_iterator = pool.imap_unordered(process_single_cif, tasks)
-        
-        for _ in tqdm(range(len(tasks)), total=len(cifs), desc="Preprocessing CIFs...", leave=False):
-            try:
-                result = results_iterator.next(timeout = 60)
-                results.append(result)
-            except TimeoutError as e:
-                continue
-        
-    # Stop log listener and flush
-    listener.stop()
-    logging.shutdown()
+    if not tasks:
+        print("All CIFs have been preprocessed, skipping...")
+    else:
+        # Create a queue for logging and start the logging process
+        log_queue = mp.Queue()
+        listener = log_listener(log_queue, pre_dir)
 
-    # Filter out None results from failed processing
-    valid_results = [result for result in results if result is not None]
+        # Parallel processing of CIF files using multiprocessing
+        num_workers = min(cpu_count(), len(cifs))  # Use available CPU cores, limited to number of files
+        with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+            results_iterator = pool.imap_unordered(process_single_cif, tasks)
+            
+            for _ in tqdm(range(len(tasks)), total=len(cifs), desc="Preprocessing CIFs...", leave=False):
+                try:
+                    result = results_iterator.next(timeout = 60) # Worker function takes care of saving individual files
+                except TimeoutError as e:
+                    continue
+            
+        # Stop log listener and flush
+        listener.stop()
+        logging.shutdown()
+
+    # Collect processed data
+    processed_files = glob(os.path.join(processed_files_dir, '*.pkl'))
+    valid_results = []
+    for f in processed_files:
+        with open(f, 'rb') as infile:
+            d = pickle.load(infile)
+            valid_results.append(d)
     names, strat_keys, cif_contents = zip(*valid_results)
 
     print("-"*20)
@@ -297,7 +328,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
 def generate_single_xrd(args):
 
     # Extract arguments
-    name, cif_content, wavelength, qmin, qmax, qstep, fwhm, snr, debug = args
+    name, cif_content, wavelength, qmin, qmax, qstep, fwhm, snr, debug, xrd_files_dir = args
     logger = logging.getLogger()
     
     # Generate structure from cif_content
@@ -346,8 +377,15 @@ def generate_single_xrd(args):
     i_cont = i_cont + noise
     i_cont[i_cont < 0] = 0 # Strictly positive signal (counts)
 
-    return name, np.vstack([q_discrete, i_discrete]), np.vstack([q_cont, i_cont]), cif_content
+    # Save output to pickle file
+    output_data = (name, np.vstack([q_discrete, i_discrete]), np.vstack([q_cont, i_cont]), cif_content)
+    output_filename = os.path.join(xrd_files_dir, name + '.pkl')
+    temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
+    with open(temp_filename, 'wb') as f:
+        pickle.dump(output_data, f)
+    os.rename(temp_filename, output_filename) # File is secure, renaming
 
+    return name, np.vstack([q_discrete, i_discrete]), np.vstack([q_cont, i_cont]), cif_content
 
 def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwhm=0.05, snr=80., debug_max=None, debug=False):
     """
@@ -390,34 +428,51 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
 
         ## Debug max
         data = data[:debug_max]
+    
+        # Directory for individual files
+        xrd_files_dir = os.path.join(xrd_dir, f"xrd_{dataset_name}_files")
+        os.makedirs(xrd_files_dir, exist_ok=True)
+
+        # Check which files have already been processed
+        existing_xrd_files = set(os.path.basename(f) for f in glob(os.path.join(xrd_files_dir, "*.pkl")))
 
         # Prepare arguments for parallel processing
-        tasks = [(name, cif_content, wavelength, qmin, qmax, qstep, fwhm, snr, debug) for (name, cif_content) in data]
-    
-        # Create a queue for logging and start the logging process
-        log_queue = mp.Queue()
-        listener = log_listener(log_queue, xrd_dir)
+        tasks = []
+        for name, cif_content in data:
+            output_filename = name + '.pkl'
+            if output_filename not in existing_xrd_files:
+                tasks.append((name, cif_content, wavelength, qmin, qmax, qstep, fwhm, snr, debug, xrd_files_dir))
 
-        # Parallel processing of CIF files using multiprocessing
-        num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
-        results = []
-        with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-            results_iterator = pool.imap_unordered(generate_single_xrd, tasks)
-            
-            for _ in tqdm(range(len(tasks)), total=len(data), desc="Calculating XRD...", leave=False):
-                try:
-                    result = results_iterator.next(timeout = 60)
-                    results.append(result)
-                except TimeoutError as e:
-                    continue
+        if not tasks:
+            print("All XRDs have been calculated, skipping...")
+        else:
+            # Create a queue for logging and start the logging process
+            log_queue = mp.Queue()
+            listener = log_listener(log_queue, xrd_dir)
 
-        # Stop log listener and flush
-        listener.stop()
-        logging.shutdown()
+            # Parallel processing of CIF files using multiprocessing
+            num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
+            with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+                results_iterator = pool.imap_unordered(generate_single_xrd, tasks)
+                
+                for _ in tqdm(range(len(tasks)), total=len(data), desc="Calculating XRD...", leave=False):
+                    try:
+                        result = results_iterator.next(timeout = 60)
+                    except TimeoutError as e:
+                        continue
+
+            # Stop log listener and flush
+            listener.stop()
+            logging.shutdown()
     
-        # Filter out None results from failed processing
-        valid_results = [result for result in results if result is not None]
-        print(f"Reduction in {dataset_name} dataset: {len(results)} --> {len(valid_results)}")
+        # Collect processed data
+        xrd_files = glob(os.path.join(xrd_files_dir, '*.pkl'))
+        valid_results = []
+        for f in xrd_files:
+            with open(f, 'rb') as infile:
+                d = pickle.load(infile)
+                valid_results.append(d)
+        print(f"Reduction in {dataset_name} dataset: {len(data)} --> {len(valid_results)}")
 
         # Save
         print(f"Saving {dataset_name} dataset with XRD data...", end="")
@@ -447,7 +502,7 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
 def tokenize_single_datum(args):
     
     # Extract arguments
-    name, xrd_discrete, xrd_cont, cif_content, debug = args
+    name, xrd_discrete, xrd_cont, cif_content, debug, tokenized_files_dir = args
     logger = logging.getLogger()
 
     # Convert discrete xrd to string
@@ -457,7 +512,6 @@ def tokenize_single_datum(args):
     cif_content = remove_cif_header(cif_content)
     cif_content_reduced = replace_data_formula_with_nonreduced_formula(cif_content)
     cif_content_nosym = replace_symmetry_loop_with_P1(cif_content_reduced)
-    print(cif_content_nosym)
 
     # Initialise Tokenizer
     tokenizer = Tokenizer()
@@ -472,6 +526,14 @@ def tokenize_single_datum(args):
             print(f"Error processing {name}: {e}")
         logger.exception(f"Exception in worker function with tokenization for CIF with name {name}, with error:\n {e}\n\n")
         return None
+    
+    # Save output to pickle file
+    output_data = name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content_reduced, cif_tokenized
+    output_filename = os.path.join(tokenized_files_dir, name + '.pkl')
+    temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
+    with open(temp_filename, 'wb') as f:
+        pickle.dump(output_data, f)
+    os.rename(temp_filename, output_filename) # File is secure, renaming
 
     return name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content_reduced, cif_tokenized
 
@@ -498,34 +560,52 @@ def tokenize_datasets(data_dir, debug_max=None, debug=False):
 
         # Debug max
         data = data[:debug_max]
+        
+        # Directory for individual files
+        tokenized_files_dir = os.path.join(tokenized_dir, f"tokenized_{dataset_name}_files")
+        os.makedirs(tokenized_files_dir, exist_ok=True)
+        
+        # Check which files have already been processed
+        existing_tokenized_files = set(os.path.basename(f) for f in glob(os.path.join(tokenized_files_dir, "*.pkl")))
 
         # Prepare arguments for parallel processing
-        tasks = [(name, xrd_discrete, xrd_cont, cif_content, debug) for (name, xrd_discrete, xrd_cont, cif_content) in data]
-        
-        # Create a queue for logging and start the logging process
-        log_queue = mp.Queue()
-        listener = log_listener(log_queue, tokenized_dir)
+        tasks = []
+        for name, xrd_discrete, xrd_cont, cif_content in data:
+            output_filename = name + '.pkl'
+            if output_filename not in existing_tokenized_files:
+                tasks.append((name, xrd_discrete, xrd_cont, cif_content, debug, tokenized_files_dir))
 
-        # Parallel processing of CIF files using multiprocessing
-        num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
-        results = []
-        with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-            results_iterator = pool.imap_unordered(tokenize_single_datum, tasks)
-            
-            for _ in tqdm(range(len(tasks)), total=len(data), desc="Tokenizing CIFs and XRDs...", leave=False):
-                try:
-                    result = results_iterator.next(timeout = 60)
-                    results.append(result)
-                except TimeoutError as e:
-                    continue
+        if not tasks:
+            print("All CIFs have been tokenized, skipping...")
+        else:
+            # Create a queue for logging and start the logging process
+            log_queue = mp.Queue()
+            listener = log_listener(log_queue, tokenized_dir)
+
+            # Parallel processing of CIF files using multiprocessing
+            num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
+            with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+                results_iterator = pool.imap_unordered(tokenize_single_datum, tasks)
+                
+                for _ in tqdm(range(len(tasks)), total=len(data), desc="Tokenizing CIFs and XRDs...", leave=False):
+                    try:
+                        result = results_iterator.next(timeout = 60)
+                    except TimeoutError as e:
+                        continue
         
-        # Stop log listener and flush
-        listener.stop()
-        logging.shutdown()
+            # Stop log listener and flush
+            listener.stop()
+            logging.shutdown()
     
-        # Filter out None results from failed processing
-        valid_results = [result for result in results if result is not None]
-        print(f"Reduction in {dataset_name} dataset: {len(results)} --> {len(valid_results)}")
+        # Collect tokenized data
+        tokenized_files = glob(os.path.join(tokenized_files_dir, '*.pkl'))
+        valid_results = []
+        for f in tokenized_files:
+            with open(f, 'rb') as infile:
+                d = pickle.load(infile)
+                valid_results.append(d)
+
+        print(f"Reduction in {dataset_name} dataset: {len(data)} --> {len(valid_results)}")
 
         # Save
         print(f"Saving {dataset_name} tokenized data...", end="")
