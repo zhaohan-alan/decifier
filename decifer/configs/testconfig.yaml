@@ -1,4 +1,4 @@
-out_dir: 'test'
+out_dir: 'test_noboundarymasking'
 eval_interval: 10  # how often to evaluate against the validation set
 eval_iters_train: 200
 eval_iters_val: 200
@@ -36,4 +36,4 @@ warmup_iters: 10
 early_stopping_patience: 5
 
 condition_with_emb: False
-boundary_masking: True
+boundary_masking: False
