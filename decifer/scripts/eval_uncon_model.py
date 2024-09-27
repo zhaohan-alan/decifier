@@ -137,12 +137,7 @@ def process_dataset(test_dataset, model, input_queue, output_queue, num_workers,
                 token_ids = [ids[ids != padding_id] for ids in token_ids]
                 
                 for j in range(num_reps):
-#                     token_ids = model.generate(
-#                         prompt,
-#                         max_new_tokens=max_new_tokens,
-#                         disable_pbar=True
-#                     )[0].cpu().numpy()
-#                     # Send the token ids and index to the worker without preprocessing
+                    # Send the token ids and index to the worker without preprocessing
                     task = {
                         'token_ids': token_ids[j],
                         'index': i,
