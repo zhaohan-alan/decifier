@@ -10,7 +10,11 @@ import argparse
 warnings.filterwarnings("ignore", category=FutureWarning, message="use_inf_as_na option is deprecated")
 
 
-def process_and_save_plots_and_stats(parquet_file_path, output_folder, upper_limit, bins):
+def process_and_save_plots_and_stats(parquet_file_path, upper_limit, bins):
+
+    # Output folder 
+    output_folder = "/".join(parquet_file_path.split("/")[:-1])
+
     # Set Seaborn style
     sns.set(style='whitegrid')
 
@@ -246,7 +250,6 @@ if __name__ == '__main__':
 
     # Add arguments for parquet file path and output folder
     parser.add_argument('--eval-file-path', required=True, type=str, help='Path to the eval file.')
-    parser.add_argument('--output-folder', required=True, type=str, help='Directory where the plots and statistics will be saved.')
     parser.add_argument('--upper-limit', type=int, help="Upper limit on histograms of sequence lengths vs. validity")
     parser.add_argument('--bins', type=int, default=100, help="Bins for histogram of sequence lengths vs. validity")
 
@@ -254,4 +257,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Call the function to process data, generate plots, and save statistics
-    process_and_save_plots_and_stats(args.eval_file_path, args.output_folder, args.upper_limit, args.bins)
+    process_and_save_plots_and_stats(args.eval_file_path, args.upper_limit, args.bins)
