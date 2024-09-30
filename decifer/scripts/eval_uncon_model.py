@@ -14,6 +14,16 @@ from tqdm.auto import tqdm
 import pandas as pd
 from glob import glob
 import pickle
+import json
+
+import numpy as np
+
+from pymatgen.analysis.diffraction.xrd import XRDCalculator
+from pymatgen.io.cif import CifWriter, Structure, CifParser
+try:
+    parser_from_string = CifParser.from_str
+except:
+    parser_from_string = CifParser.from_string
 
 # Import custom modules
 from decifer import (
@@ -73,6 +83,52 @@ def evaluate_cif(cif):
         pass  # You can log the exception if needed
     return eval_dict
 
+def calculate_xrd(cif, xrd_parameters, debug=False):
+    try:
+        struct = parser_from_string(cif).get_structures()[0]
+    except Exception as e:
+        if debug:
+            print(f"Error processing {name}: {e}")
+        return None
+
+    try:
+        # Init calculator object
+        xrd_calc = XRDCalculator(wavelength=xrd_parameters['wavelength'])
+
+        # Get XRD pattern
+        xrd_pattern = xrd_calc.get_pattern(struct)
+
+    except Exception as e:
+        if debug:
+            print(f"Error processing {name}: {e}")
+        return None
+
+    # Convert to Q
+    theta = np.radians(xrd_pattern.x / 2)
+    q_discrete = 4 * np.pi * np.sin(theta) / xrd_calc.wavelength # Q = 4 pi sin theta / lambda
+    i_discrete = xrd_pattern.y / (np.max(xrd_pattern.y) + 1e-16)
+
+    # Define Q grid
+    q_cont = np.arange(xrd_parameters['qmin'], xrd_parameters['qmax'], xrd_parameters['qstep'])
+
+    # Init itensity array
+    i_cont = np.zeros_like(q_cont)
+
+    # Apply Gaussian broadening
+    for q_peak, intensity in zip(q_discrete, xrd_pattern.y):
+        gaussian_peak = intensity * np.exp(-0.5 * ((q_cont - q_peak) / xrd_parameters['fwhm']) ** 2)
+        i_cont += gaussian_peak
+
+    # Normalize intensities
+    i_cont /= (np.max(i_cont) + 1e-16)
+
+    # Add noise based on SNR
+    noise = np.random.normal(0, np.max(i_cont) / xrd_parameters['snr'], size=i_cont.shape)
+    i_cont = i_cont + noise
+    i_cont[i_cont < 0] = 0 # Strictly positive signal (counts)
+
+    return {'q': q_cont, 'iq': i_cont}
+
 def worker(input_queue, output_queue, eval_files_dir):
 
     # Create tokenizer
@@ -88,7 +144,21 @@ def worker(input_queue, output_queue, eval_files_dir):
         rep = task['rep']
         dataset_name = task.get('dataset', 'UnknownDataset')
         model_name = task.get('model', 'UnknownModel')
+        xrd_parameters = task.get(
+            'xrd_parameters', 
+            {
+                'wavelength': 'CuKa',
+                'qmin': 0.0,
+                'qmax': 20.0,
+                'qstep': 0.01,
+                'fwhm': 0.1,
+                'snr': 20.0,
+            }
+        )
+        xrd_from_sample = task['xrd_from_sample']
+        debug = task['debug']
         try:
+
             # Preprocessing steps
             cif = decode(token_ids)
             cif = replace_symmetry_loop_with_P1(cif)
@@ -96,26 +166,37 @@ def worker(input_queue, output_queue, eval_files_dir):
             if spacegroup_symbol != "P 1":
                 cif = reinstate_symmetry_loop(cif, spacegroup_symbol)
             if is_sensible(cif):
+
                 # Evaluate the CIF
                 eval_result = evaluate_cif(cif)
+            
+                # Add index and rep
+                eval_result['index'] = idx
+                eval_result['rep'] = rep
+
+                # Calculate CIF descriptors
+                eval_result['descriptors'] = {}
+                eval_result['descriptors']['xrd_gen'] = calculate_xrd(cif, xrd_parameters, debug)
+                eval_result['descriptors']['xrd_sample'] = xrd_from_sample
+                # TODO add more
+
                 # Add 'Dataset' and 'Model' to eval_result
                 eval_result['Dataset'] = dataset_name
                 eval_result['Model'] = model_name
                 eval_result['seq_len'] = len(token_ids)
-                output_dict = {'result': eval_result, 'index': idx, 'rep': rep}
-                output_queue.put(output_dict)
+                eval_result['status'] = 'success'
 
                 # Save the results to pickle
                 output_filename = os.path.join(eval_files_dir, f"{name}_{rep}.pkl")
                 temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
                 with open(temp_filename, 'wb') as f:
-                    pickle.dump(output_dict, f)
+                    pickle.dump(eval_result, f)
                 os.rename(temp_filename, output_filename) # File is secure, renaming
-
+                output_queue.put(eval_result)
             else:
-                output_queue.put({'result': None, 'index': idx, 'rep': rep})
+                output_queue.put({'status': 'fail', 'index': idx, 'rep': rep})
         except Exception as e:
-            output_queue.put({'error': str(e), 'index': idx, 'rep': rep})
+            output_queue.put({'status': 'error', 'error_msg': str(e), 'index': idx, 'rep': rep})
 
 def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, eval_files_dir, num_workers,
                     out_folder_path='./', debug_max=None, debug=False,
@@ -124,6 +205,7 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
                     num_reps=1,):
     evaluations = []
     invalid_cifs = 0
+    error_cifs = 0
     start = time()
     
     # Check which files have already been processed
@@ -132,29 +214,40 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
     # Make dataset from test
     test_dataset = HDF5Dataset(
         h5_test_path,
-        ["name", "cif_tokenized"], 
+        ["name", "cif_tokenized", "xrd_cont_x", "xrd_cont_y"],
         block_size=block_size,
     )
+
+    # Extract metadata
+    metadata_path = os.path.join(os.path.dirname(os.path.dirname(h5_test_path)), "metadata.json")
+    with open(metadata_path, "r") as f:
+        metadata = json.load(f)
     
     # Padding token
     padding_id = Tokenizer().padding_id
 
-    num_samples = (len(test_dataset) - len(existing_eval_files)) * num_reps
-    num_gens = min(num_samples, (debug_max - len(existing_eval_files)) * num_reps) if debug_max is not None else num_samples
+    num_samples = len(test_dataset) * num_reps
+    num_gens = min(num_samples, debug_max * num_reps) if debug_max is not None else num_samples
     pbar = tqdm(total=num_gens, desc='Generating...', leave=True)
     n_sent = 0
-    for i, (name, sample) in enumerate(test_dataset):
+    for i, (name, sample, xrd_cont_x, xrd_cont_y) in enumerate(test_dataset):
+
+        # Start rep number
+        start_rep = 0
         
         # Skip if eval file is already present
         if any(file_name.startswith(name) for file_name in existing_eval_files):
             # Count how many and adjust the num_rep
-            num_adjusted_reps = num_reps - len(glob(os.path.join(eval_files_dir, name + '*.pkl')))
+            num_evals = len(glob(os.path.join(eval_files_dir, name + '*.pkl')))
+            num_adjusted_reps = num_reps - num_evals
+            start_rep = num_evals
+            pbar.update(num_evals)
             if num_adjusted_reps == 0:
                 continue
         else:
             num_adjusted_reps = num_reps
 
-        if debug_max and (i + 1) > debug_max * num_adjusted_reps:
+        if debug_max and (i + 1) > debug_max:
             break  # Stop after reaching the debug_max limit
         if model is not None:
             prompt = extract_prompt(
@@ -174,9 +267,12 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
                         'token_ids': token_ids[j],
                         'name': name,
                         'index': i,
-                        'rep': j,
+                        'rep': start_rep + j,
+                        'xrd_parameters': metadata['xrd_parameters'],
+                        'xrd_from_sample': {'q': xrd_cont_x.numpy(), 'iq': xrd_cont_y.numpy()},
                         'dataset': dataset_name,
-                        'model': model_name
+                        'model': model_name,
+                        'debug': debug,
                     }
                     input_queue.put(task)
                     n_sent += 1
@@ -189,8 +285,11 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
                 'name': name,
                 'index': i,
                 'rep': 0,
+                'xrd_parameters': metadata['xrd_parameters'],
+                'xrd_from_sample': {'q': xrd_cont_x.numpy(), 'iq': xrd_cont_y.numpy()},
                 'dataset': dataset_name,
-                'model': "NoModel"
+                'model': "NoModel",
+                'debug': debug,
             }
             input_queue.put(task)
             n_sent += 1
@@ -209,35 +308,52 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
         try:
             message = output_queue.get(timeout=1)
             idx = message['index']
-            if 'result' in message:
-                eval_result = message['result']
-                if eval_result is not None:
-                    evaluations.append(eval_result)
-                else:
-                    invalid_cifs += 1
-            elif 'error' in message:
-                if debug:
-                    print(f"Worker error for index {idx}: {message['error']}")
+            status = message['status']
+            if status == 'fail':
                 invalid_cifs += 1
+            elif status == 'error':
+                error_cifs += 1
+                if debug:
+                    print(f"Worker error for index {idx}: {message['error_msg']}")
             n_received += 1
         except Empty:
             continue
         finally:
             pbar.update(1)
     pbar.close()
-
-    print(f"Processed {n_sent} samples in {(time() - start):.3f} seconds.")
-    print(f"Successful: {len(evaluations)} / {n_sent}")
+    #            eval_result = message['result']
+    #            if eval_result is not None:
+    #                
+    #                # Add descriptors of dataset sample
+    #                eval_result['xrd']
+    #
+    #                evaluations.append(eval_result)
+    #            else:
+    #                invalid_cifs += 1
+    #        elif 'error' in message:
+    #            if debug:
+    #                print(f"Worker error for index {idx}: {message['error']}")
+    #            invalid_cifs += 1
+    #        n_received += 1
+    #    except Empty:
+    #        continue
+    #    finally:
+    #        pbar.update(1)
+    #pbar.close()
 
     # Collect evaluated data from pickles
     eval_files = glob(os.path.join(eval_files_dir, '*.pkl'))
     for f in eval_files:
         with open(f, 'rb') as infile:
-            d = pickle.load(infile)
-            evaluations.append(d)
+            eval_result = pickle.load(infile)
+            evaluations.append(eval_result)
+    
+    print(f"Processed {n_sent} samples in {(time() - start):.3f} seconds.") 
+    print(f"Total number of successful evaluations: {len(evaluations)}.")
 
     # Convert evaluations to DataFrame
     df = pd.json_normalize(evaluations)
+    print(df)
 
     # Write to Parquet file
     out_file_path = os.path.join(out_folder_path, dataset_name + '.eval')
