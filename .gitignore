@@ -17,6 +17,7 @@ decifer/logs/
 # Ignore eval files
 **/*.parquet
 **/*.eval
+**/*.pkl
 
 # Ignore example cifs
 example_cifs/
