@@ -25,6 +25,9 @@ try:
 except:
     parser_from_string = CifParser.from_string
 
+# descriptors
+from dscribe.descriptors import SOAP, MBTR, ACSF
+
 # Import custom modules
 from decifer import (
     HDF5Dataset,
@@ -80,7 +83,7 @@ def evaluate_cif(cif):
         eval_dict['cell_params']['gen_vol'] = extract_volume(cif)
         
     except Exception:
-        pass  # You can log the exception if needed
+        return eval_dict
     return eval_dict
 
 def calculate_xrd(cif, xrd_parameters, debug=False):
@@ -128,6 +131,84 @@ def calculate_xrd(cif, xrd_parameters, debug=False):
     i_cont[i_cont < 0] = 0 # Strictly positive signal (counts)
 
     return {'q': q_cont, 'iq': i_cont}
+
+def calculate_crystal_descriptors(
+    cif, 
+    r_cut_soap: float = 6.0,
+    n_max_soap: int = 8, # Number of radial basis functions for SOAP calculation
+    l_max_soap: int = 6, # Maximum degree of spherical harmonics.
+    sigma_soap: float = 1.0,
+    rbf_soap: str = 'gto',
+    geometry_function_mbtr: str = 'inverse_distance',
+    grid_min_mbtr: float = 0.0,
+    grid_max_mbtr: float = 1.0,
+    grid_sigma_mbtr: float = 0.01,
+    grid_n_mbtr: int = 200,
+    weighting_function_mbtr: str = 'exp',
+    weighting_scale_mbtr: float = 0.5,
+    weighting_threshold: float = 0.001,
+    normalization_mbtr: str = 'l2',
+    r_cut_acsf: float = 6.0,
+    periodic: bool = True,
+    sparse: bool = False,
+):
+
+    # Load structure and parse to ASE
+    structure = parser_from_string(cif).parse_structures()[0]
+    ase_structure = structure.to_ase_atoms()
+
+    # Retrieve species
+    species = list(set([str(site.specie) for site in structure]))
+
+    # Setup SOAP object
+    soap = SOAP(
+        species = species,
+        r_cut = r_cut_soap,
+        n_max = n_max_soap,
+        l_max = l_max_soap,
+        periodic = periodic,
+        sparse = sparse,
+    )
+
+    # Setup MBTR object
+    mbtr = MBTR(
+        species = species,
+
+        geometry = {
+            "function": geometry_function_mbtr,
+        },
+
+        grid = {
+            "min": grid_min_mbtr,
+            "max": grid_max_mbtr,
+            "sigma": grid_sigma_mbtr,
+            "n": grid_n_mbtr,
+        },
+
+        weighting = {
+            "function": weighting_function_mbtr,
+            "scale": weighting_scale_mbtr,
+            "threshold": weighting_threshold,
+        },
+
+        periodic = periodic,
+        normalization = normalization_mbtr,
+    )
+
+    # Setup ACSF
+    acsf = ACSF(
+        species = species,
+        r_cut = r_cut_acsf,
+        periodic = periodic,
+    )
+
+    # Calculate descriptors and return dict
+    descriptor_dict = {
+        "SOAP": soap.create(ase_structure, centers=[0])[0],
+        "MBTR": mbtr.create(ase_structure),
+        "ACSF": acsf.create(ase_structure, centers=[0])[0],
+    }
+    return descriptor_dict
 
 def worker(input_queue, output_queue, eval_files_dir):
 
@@ -178,7 +259,10 @@ def worker(input_queue, output_queue, eval_files_dir):
                 eval_result['descriptors'] = {}
                 eval_result['descriptors']['xrd_gen'] = calculate_xrd(cif, xrd_parameters, debug)
                 eval_result['descriptors']['xrd_sample'] = xrd_from_sample
-                # TODO add more
+                crystal_descriptors = calculate_crystal_descriptors(cif) # TODO add parameters from config(?) file
+                eval_result['descriptors']['SOAP_gen'] = crystal_descriptors['SOAP']
+                eval_result['descriptors']['MBTR_gen'] = crystal_descriptors['MBTR']
+                eval_result['descriptors']['ACSF_gen'] = crystal_descriptors['ACSF']
 
                 # Add 'Dataset' and 'Model' to eval_result
                 eval_result['Dataset'] = dataset_name
@@ -321,25 +405,6 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
         finally:
             pbar.update(1)
     pbar.close()
-    #            eval_result = message['result']
-    #            if eval_result is not None:
-    #                
-    #                # Add descriptors of dataset sample
-    #                eval_result['xrd']
-    #
-    #                evaluations.append(eval_result)
-    #            else:
-    #                invalid_cifs += 1
-    #        elif 'error' in message:
-    #            if debug:
-    #                print(f"Worker error for index {idx}: {message['error']}")
-    #            invalid_cifs += 1
-    #        n_received += 1
-    #    except Empty:
-    #        continue
-    #    finally:
-    #        pbar.update(1)
-    #pbar.close()
 
     # Collect evaluated data from pickles
     eval_files = glob(os.path.join(eval_files_dir, '*.pkl'))
@@ -353,7 +418,6 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
 
     # Convert evaluations to DataFrame
     df = pd.json_normalize(evaluations)
-    print(df)
 
     # Write to Parquet file
     out_file_path = os.path.join(out_folder_path, dataset_name + '.eval')
