@@ -1,14 +1,14 @@
 out_dir: 'test'
 eval_interval: 10  # how often to evaluate against the validation set
-eval_iters_train: 1
-eval_iters_val: 1
+eval_iters_train: 200
+eval_iters_val: 200
 log_interval: 1  # how often to print to the console (1 = every iteration)
 init_from: 'scratch'
 
 device: 'cuda'
-compile: False
+compile: True
 
-dtype: 'float16'
+dtype: 'bfloat16'
 
 # whether to always save a checkpoint
 always_save_checkpoint: True
@@ -16,7 +16,7 @@ always_save_checkpoint: True
 # whether to validate with a validation set
 validate: True
 
-dataset: 'data/crystallm/500k'
+dataset: 'data/crystallm/5000'
 batch_size: 8
 block_size: 1024
 
