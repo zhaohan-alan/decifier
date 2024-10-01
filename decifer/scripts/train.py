@@ -50,6 +50,7 @@ class TrainConfig:
     block_size: int = 2048  # context of up to `block_size` previous characters
     accumulative_pbar: bool = False
     packing: bool = True
+    num_workers_dataloader: int = 0 # Default; single process
 
     # LoRA
     use_lora: bool = False
@@ -146,17 +147,17 @@ if __name__ == "__main__":
     # Random batching sampler, train
     train_sampler = SubsetRandomSampler(range(len(train_dataset)))
     train_batch_sampler = RandomBatchSampler(train_sampler, batch_size=C.batch_size, drop_last=False)
-    train_dataloader = DataLoader(train_dataset, batch_sampler=train_batch_sampler)
+    train_dataloader = DataLoader(train_dataset, batch_sampler=train_batch_sampler, num_workers=C.num_workers_dataloader)
     
     # Random batching sampler, val
     val_sampler = SubsetRandomSampler(range(len(val_dataset)))
     val_batch_sampler = RandomBatchSampler(val_sampler, batch_size=C.batch_size, drop_last=False)
-    val_dataloader = DataLoader(val_dataset, batch_sampler=val_batch_sampler)
+    val_dataloader = DataLoader(val_dataset, batch_sampler=val_batch_sampler, num_workers=C.num_workers_dataloader)
     
     # Random batching sampler, test
     test_sampler = SubsetRandomSampler(range(len(test_dataset)))
     test_batch_sampler = RandomBatchSampler(test_sampler, batch_size=C.batch_size, drop_last=False)
-    test_dataloader = DataLoader(test_dataset, batch_sampler=test_batch_sampler)
+    test_dataloader = DataLoader(test_dataset, batch_sampler=test_batch_sampler, num_workers=C.num_workers_dataloader)
 
     # Combine loaders for easy access
     dataloaders = {
@@ -362,10 +363,16 @@ if __name__ == "__main__":
             cond_batch = torch.stack(cond_list).to(C.device)
         else:
             cond_batch = None
-
-        # Move data to the appropriate device
-        X_batch = X_batch.to(C.device)
-        Y_batch = Y_batch.to(C.device)
+        
+        # Send to device (CUDA/CPU)
+        if C.device == "cuda":
+            X_batch = X_batch.pin_memory().to(C.device, non_blocking=True)
+            Y_batch = Y_batch.pin_memory().to(C.device, non_blocking=True)
+            cond_batch = cond_batch.pin_memory().to(C.device, non_blocking=True) if conditioning else cond_batch
+        else:
+            X_batch = X_batch.pin_memory().to(C.device)
+            Y_batch = Y_batch.pin_memory().to(C.device)
+            cond_batch = cond_batch.pin_memory().to(C.device) if conditioning else cond_batch
 
         # Return the batch data and start indices
         return X_batch, Y_batch, cond_batch, start_indices_list
