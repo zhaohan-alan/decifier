@@ -86,7 +86,7 @@ def evaluate_cif(cif):
         return eval_dict
     return eval_dict
 
-def calculate_xrd(cif, xrd_parameters, debug=False):
+def calculate_xrd(name, cif, xrd_parameters, debug=False):
     try:
         struct = parser_from_string(cif).get_structures()[0]
     except Exception as e:
@@ -126,89 +126,54 @@ def calculate_xrd(cif, xrd_parameters, debug=False):
     i_cont /= (np.max(i_cont) + 1e-16)
 
     # Add noise based on SNR
-    noise = np.random.normal(0, np.max(i_cont) / xrd_parameters['snr'], size=i_cont.shape)
-    i_cont = i_cont + noise
+    if xrd_parameters['snr'] < 100.:
+        noise = np.random.normal(0, np.max(i_cont) / xrd_parameters['snr'], size=i_cont.shape)
+        i_cont = i_cont + noise
     i_cont[i_cont < 0] = 0 # Strictly positive signal (counts)
 
     return {'q': q_cont, 'iq': i_cont}
 
-def calculate_crystal_descriptors(
-    cif, 
-    r_cut_soap: float = 6.0,
-    n_max_soap: int = 8, # Number of radial basis functions for SOAP calculation
-    l_max_soap: int = 6, # Maximum degree of spherical harmonics.
-    sigma_soap: float = 1.0,
-    rbf_soap: str = 'gto',
-    geometry_function_mbtr: str = 'inverse_distance',
-    grid_min_mbtr: float = 0.0,
-    grid_max_mbtr: float = 1.0,
-    grid_sigma_mbtr: float = 0.01,
-    grid_n_mbtr: int = 200,
-    weighting_function_mbtr: str = 'exp',
-    weighting_scale_mbtr: float = 0.5,
-    weighting_threshold: float = 0.001,
-    normalization_mbtr: str = 'l2',
-    r_cut_acsf: float = 6.0,
-    periodic: bool = True,
-    sparse: bool = False,
-):
+def calculate_crystal_descriptors(name, cif, species, desc_parameters, debug=False):
+        
+    try:
+        # Load structure and parse to ASE
+        ase_structure = parser_from_string(cif).get_structures()[0].to_ase_atoms()
 
-    # Load structure and parse to ASE
-    structure = parser_from_string(cif).parse_structures()[0]
-    ase_structure = structure.to_ase_atoms()
+        # Setup SOAP object
+        soap = SOAP(
+            species = species,
+            r_cut = desc_parameters['r_cut_soap'],
+            n_max = desc_parameters['n_max_soap'],
+            l_max = desc_parameters['l_max_soap'],
+            sigma = desc_parameters['sigma_soap'],
+            rbf = desc_parameters['rbf_soap'],
+            compression = {
+                'mode': desc_parameters['compression_mode_soap'],
+                'weighting': None,
+            },
+            periodic = desc_parameters['periodic'],
+            sparse = desc_parameters['sparse'],
+        )
 
-    # Retrieve species
-    species = list(set([str(site.specie) for site in structure]))
+        # Setup ACSF
+        acsf = ACSF(
+            species = species,
+            r_cut = desc_parameters['r_cut_acsf'],
+            periodic = desc_parameters['periodic'],
+        )
 
-    # Setup SOAP object
-    soap = SOAP(
-        species = species,
-        r_cut = r_cut_soap,
-        n_max = n_max_soap,
-        l_max = l_max_soap,
-        periodic = periodic,
-        sparse = sparse,
-    )
+        # Calculate descriptors and return dict
+        descriptor_dict = {}
+        descriptor_dict['SOAP'] = soap.create(ase_structure, centers=[0])[0]
+        descriptor_dict['ACSF'] = acsf.create(ase_structure, centers=[0])[0]
+    
+        return descriptor_dict
 
-    # Setup MBTR object
-    mbtr = MBTR(
-        species = species,
-
-        geometry = {
-            "function": geometry_function_mbtr,
-        },
-
-        grid = {
-            "min": grid_min_mbtr,
-            "max": grid_max_mbtr,
-            "sigma": grid_sigma_mbtr,
-            "n": grid_n_mbtr,
-        },
-
-        weighting = {
-            "function": weighting_function_mbtr,
-            "scale": weighting_scale_mbtr,
-            "threshold": weighting_threshold,
-        },
-
-        periodic = periodic,
-        normalization = normalization_mbtr,
-    )
-
-    # Setup ACSF
-    acsf = ACSF(
-        species = species,
-        r_cut = r_cut_acsf,
-        periodic = periodic,
-    )
-
-    # Calculate descriptors and return dict
-    descriptor_dict = {
-        "SOAP": soap.create(ase_structure, centers=[0])[0],
-        "MBTR": mbtr.create(ase_structure),
-        "ACSF": acsf.create(ase_structure, centers=[0])[0],
-    }
-    return descriptor_dict
+    except Exception as e:
+        if debug:
+            print(f"Error processing {name}: {e}")
+        return None
+    
 
 def worker(input_queue, output_queue, eval_files_dir):
 
@@ -233,13 +198,29 @@ def worker(input_queue, output_queue, eval_files_dir):
                 'qmax': 20.0,
                 'qstep': 0.01,
                 'fwhm': 0.1,
-                'snr': 20.0,
+                'snr': 100.0,
             }
         )
         xrd_from_sample = task['xrd_from_sample']
+        soap_from_sample = task['soap_from_sample']
+        acsf_from_sample = task['acsf_from_sample']
+        desc_parameters = task.get(
+            'descriptors_parameters',
+            {
+                "r_cut_soap": 6.0,
+                "n_max_soap": 2,
+                "l_max_soap": 5,
+                "sigma_soap": 1.0,
+                "rbf_soap": 'gto',
+                "compression_mode_soap": 'crossover',
+                "r_cut_acsf": 6.0,
+                "periodic": True,
+                "sparse": False,
+            }
+        )
+        species = list(task['species'].keys())
         debug = task['debug']
         try:
-
             # Preprocessing steps
             cif = decode(token_ids)
             cif = replace_symmetry_loop_with_P1(cif)
@@ -257,12 +238,13 @@ def worker(input_queue, output_queue, eval_files_dir):
 
                 # Calculate CIF descriptors
                 eval_result['descriptors'] = {}
-                eval_result['descriptors']['xrd_gen'] = calculate_xrd(cif, xrd_parameters, debug)
+                eval_result['descriptors']['xrd_gen'] = calculate_xrd(name, cif, xrd_parameters, debug)
                 eval_result['descriptors']['xrd_sample'] = xrd_from_sample
-                crystal_descriptors = calculate_crystal_descriptors(cif) # TODO add parameters from config(?) file
-                eval_result['descriptors']['SOAP_gen'] = crystal_descriptors['SOAP']
-                eval_result['descriptors']['MBTR_gen'] = crystal_descriptors['MBTR']
-                eval_result['descriptors']['ACSF_gen'] = crystal_descriptors['ACSF']
+                crystal_descriptors = calculate_crystal_descriptors(name, cif, species, desc_parameters, debug)
+                eval_result['descriptors']['soap_gen'] = crystal_descriptors['SOAP']
+                eval_result['descriptors']['soap_sample'] = soap_from_sample
+                eval_result['descriptors']['acsf_gen'] = crystal_descriptors['ACSF']
+                eval_result['descriptors']['acsf_sample'] = acsf_from_sample
 
                 # Add 'Dataset' and 'Model' to eval_result
                 eval_result['Dataset'] = dataset_name
@@ -298,7 +280,7 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
     # Make dataset from test
     test_dataset = HDF5Dataset(
         h5_test_path,
-        ["name", "cif_tokenized", "xrd_cont_x", "xrd_cont_y"],
+        ["name", "cif_tokenized", "xrd_cont_x", "xrd_cont_y", "soap", "acsf"],
         block_size=block_size,
     )
 
@@ -314,7 +296,7 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
     num_gens = min(num_samples, debug_max * num_reps) if debug_max is not None else num_samples
     pbar = tqdm(total=num_gens, desc='Generating...', leave=True)
     n_sent = 0
-    for i, (name, sample, xrd_cont_x, xrd_cont_y) in enumerate(test_dataset):
+    for i, (name, sample, xrd_cont_x, xrd_cont_y, soap, acsf) in enumerate(test_dataset):
 
         # Start rep number
         start_rep = 0
@@ -354,6 +336,10 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
                         'rep': start_rep + j,
                         'xrd_parameters': metadata['xrd_parameters'],
                         'xrd_from_sample': {'q': xrd_cont_x.numpy(), 'iq': xrd_cont_y.numpy()},
+                        'soap_from_sample': soap.numpy(),
+                        'acsf_from_sample': acsf.numpy(),
+                        'desc_parameters': metadata['descriptors_parameters'],
+                        'species': metadata['species'],
                         'dataset': dataset_name,
                         'model': model_name,
                         'debug': debug,
@@ -371,6 +357,10 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
                 'rep': 0,
                 'xrd_parameters': metadata['xrd_parameters'],
                 'xrd_from_sample': {'q': xrd_cont_x.numpy(), 'iq': xrd_cont_y.numpy()},
+                'soap_from_sample': soap.numpy(),
+                'acsf_from_sample': acsf.numpy(),
+                'desc_parameters': metadata['descriptors_parameters'],
+                'species': metadata['species'],
                 'dataset': dataset_name,
                 'model': "NoModel",
                 'debug': debug,
