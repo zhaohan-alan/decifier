@@ -250,7 +250,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     error_file_path = os.path.join(pre_dir, "error_files.txt")
     if os.path.exists(error_file_path):
         with open(error_file_path, 'r') as f:
-            error_files.extend(line.strip() for line in f)
+            error_files.extend([line.strip() for line in f])
 
     # Check which files have already been processed
     existing_processed_files = set(os.path.basename(f) for f in glob(os.path.join(processed_files_dir, "*.pkl")))
@@ -265,7 +265,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
         else:
             continue
         output_filename = name + '.pkl'
-        if output_filename not in existing_processed_files and name not in error_files:
+        if (output_filename not in existing_processed_files) and (name not in error_files):
             tasks.append((path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, processed_files_dir, error_files))
 
     if not tasks:
@@ -907,8 +907,8 @@ def serialize(data_dir):
             hdf5_file.create_dataset('xrd_tokenized', data=data_dict['xrd_tokenized'], dtype=h5py.special_dtype(vlen=np.dtype('int32')))
             hdf5_file.create_dataset('cif_content', data=data_dict['cif_content'])
             hdf5_file.create_dataset('cif_tokenized', data=data_dict['cif_tokenized'], dtype=h5py.special_dtype(vlen=np.dtype('int32')))
-            hdf5_file.create_dataset('soap', data=data_dict['soap'], dtype=np.dtype('float16'))
-            hdf5_file.create_dataset('acsf', data=data_dict['acsf'], dtype=np.dtype('float16'))
+            hdf5_file.create_dataset('soap', data=data_dict['soap'])#, dtype=np.dtype('float16'))
+            hdf5_file.create_dataset('acsf', data=data_dict['acsf'])#, dtype=np.dtype('float16'))
 
     print(f"Successfully created HDF5 files at {hdf5_dir}.")
     print()
