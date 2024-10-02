@@ -267,9 +267,9 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     # Prepare arguments for parallel processing
     tasks = []
     for path in cifs:
-        if isinstance(path, str):
+        if isinstance(path, str): # If raw cifs come in folder
             name = os.path.basename(path)
-        elif isinstance(path, tuple):
+        elif isinstance(path, tuple): # If raw cifs come in pkl.gz
             name = path[0]
         else:
             continue
@@ -290,7 +290,11 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
             
             for _ in tqdm(range(len(tasks)), total=len(cifs), desc="Preprocessing CIFs...", leave=False):
                 try:
-                    results_iterator.next(timeout = 60) # Worker function takes care of saving individual files
+                    species_i, spacegroups_i = results_iterator.next(timeout = 60) # Worker function takes care of saving individual files
+                    if species_i is not None:
+                        species.append(species_i)
+                    if spacegroups_i is not None:
+                        spacegroups.append(spacegroups_i)
                 except TimeoutError as e:
                     continue
             
@@ -305,13 +309,13 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
                 f.write(f"{filename}\n")
 
     # Collect processed data
-    processed_files = glob(os.path.join(processed_files_dir, '*.pkl'))
-    valid_results = []
-    for f in processed_files:
-        with open(f, 'rb') as infile:
-            d = pickle.load(infile)
-            valid_results.append(d)
-    names, strat_keys, cif_contents, species, spacegroups, compositions = zip(*valid_results)
+    #processed_files = glob(os.path.join(processed_files_dir, '*.pkl'))
+    #valid_results = []
+    #for f in processed_files:
+    #    with open(f, 'rb') as infile:
+    #        d = pickle.load(infile)
+    #        valid_results.append(d)
+    #names, strat_keys, cif_contents, species, spacegroups, compositions = zip(*valid_results)
 
     species = [specie for subset in species for specie in subset]
     species_dict = Counter(species)
@@ -323,38 +327,38 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     print(f"Reduction in dataset: {len(cifs)} samples --> {len(cif_contents)} samples")
 
     # Create data splits
-    train_size = int(0.8 * len(cif_contents))
-    val_size = int(0.1 * len(cif_contents))
-    test_size = len(cif_contents) - train_size - val_size
-    print("Train size:", train_size)
-    print("Val size:", val_size)
-    print("Test size:", test_size)
+    #train_size = int(0.8 * len(cif_contents))
+    #val_size = int(0.1 * len(cif_contents))
+    #test_size = len(cif_contents) - train_size - val_size
+    #print("Train size:", train_size)
+    #print("Val size:", val_size)
+    #print("Test size:", test_size)
 
     # Split data using stratification
-    train_data, test_data, train_names, test_names = train_test_split(
-        cif_contents, names, test_size=test_size, stratify=strat_keys, random_state=seed
-    )
-    train_data, val_data, train_names, val_names = train_test_split(
-        train_data, train_names, test_size=val_size, stratify=[strat_keys[cif_contents.index(f)] for f in train_data], random_state=seed
-    )
+    #train_data, test_data, train_names, test_names = train_test_split(
+    #    cif_contents, names, test_size=test_size, stratify=strat_keys, random_state=seed
+    #)
+    #train_data, val_data, train_names, val_names = train_test_split(
+    #    train_data, train_names, test_size=val_size, stratify=[strat_keys[cif_contents.index(f)] for f in train_data], random_state=seed
+    #)
 
-    train = [(n, d) for (n, d) in zip(train_names, train_data)]
-    val = [(n, d) for (n, d) in zip(val_names, val_data)]
-    test = [(n, d) for (n, d) in zip(test_names, test_data)]
+    #train = [(n, d) for (n, d) in zip(train_names, train_data)]
+    #val = [(n, d) for (n, d) in zip(val_names, val_data)]
+    #test = [(n, d) for (n, d) in zip(test_names, test_data)]
 
     # Save the train/val/test data splits
-    for data, prefix in zip([train, val, test], ["train", "val", "test"]):
-        print(f"Saving {prefix} dataset...", end="")
-        with gzip.open(os.path.join(pre_dir, f"{prefix}_dataset.pkl.gz"), "wb") as pkl:
-            pickle.dump(data, pkl)
-        del data
-        print("DONE.")
+    #for data, prefix in zip([train, val, test], ["train", "val", "test"]):
+    #    print(f"Saving {prefix} dataset...", end="")
+    #    with gzip.open(os.path.join(pre_dir, f"{prefix}_dataset.pkl.gz"), "wb") as pkl:
+    #        pickle.dump(data, pkl)
+    #    del data
+    #    print("DONE.")
 
     # Centralized metadata for preprocessing
     metadata = {
-        "train_size": train_size,
-        "val_size": val_size,
-        "test_size": test_size,
+        #"train_size": train_size,
+        #"val_size": val_size,
+        #"test_size": test_size,
         "total_files_processed": len(cifs),
         "total_valid_files": len(cif_contents),
         "decimal_places": decimal_places,
