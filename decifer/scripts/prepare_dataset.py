@@ -563,10 +563,10 @@ def serialize(data_dir):
         #"val_size": val_size,
         #"test_size": test_size,
 
-    pre_dir = os.path.join()
-    dataset_size = len(os.listdir()
+    #pre_dir = os.path.join()
+    #dataset_size = len(os.listdir()
 
-    try:
+    #try:
     
     # Find train / val / test
     tokenized_dir = os.path.join(data_dir, "tokenized")
