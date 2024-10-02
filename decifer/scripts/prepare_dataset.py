@@ -21,7 +21,7 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from glob import glob
 import multiprocessing as mp
-from multiprocessing import Pool, cpu_count, TimeoutError
+from multiprocessing import Pool, cpu_count, TimeoutError, Manager
 import numpy as np
 import time
 import random
@@ -139,7 +139,7 @@ def process_single_cif(args):
     Returns:
         tuple: (strat_key, cif_content) if processing is successful, else None.
     """
-    cif, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, processed_files_dir = args
+    cif, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, processed_files_dir, failed_files = args
     logger = logging.getLogger()
     try:
         # Make structure
@@ -199,6 +199,9 @@ def process_single_cif(args):
             print(f"Error processing {cif}: {e}")
 
         logger.exception(f"Exception in worker function pre-processing CIF {cif}, with error:\n {e}\n\n")
+        
+        # Append the file name the failed_files manager list
+        failed_files.append(name)
 
         return None
 
@@ -241,6 +244,14 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     processed_files_dir = os.path.join(pre_dir, "preprocessed_files")
     os.makedirs(processed_files_dir, exist_ok=True)
 
+    # Create manager for failed structures
+    manager = Manager()
+    error_files = manager.list()
+    error_file_path = os.path.join(pre_dir, "error_files.txt")
+    if os.path.exists(error_file_path):
+        with open(error_file_path, 'r') as f:
+            error_files.extend(line.strip() for line in f)
+
     # Check which files have already been processed
     existing_processed_files = set(os.path.basename(f) for f in glob(os.path.join(processed_files_dir, "*.pkl")))
 
@@ -254,8 +265,8 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
         else:
             continue
         output_filename = name + '.pkl'
-        if output_filename not in existing_processed_files:
-            tasks.append((path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, processed_files_dir))
+        if output_filename not in existing_processed_files and name not in error_files:
+            tasks.append((path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, processed_files_dir, error_files))
 
     if not tasks:
         print("All CIFs have been preprocessed, skipping...")
@@ -278,6 +289,12 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
         # Stop log listener and flush
         listener.stop()
         logging.shutdown()
+
+    # Write failed files to error_files.txt
+    if error_files:
+        with open(error_file_path, "w") as f:
+            for filename in error_files:
+                f.write(f"{filename}\n")
 
     # Collect processed data
     processed_files = glob(os.path.join(processed_files_dir, '*.pkl'))
