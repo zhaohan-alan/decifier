@@ -1041,13 +1041,13 @@ if __name__ == "__main__":
         preprocess(args.data_dir, args.seed, args.group_size, args.decimal_places, args.remove_occ, args.debug_max, args.debug, args.workers)
     
     if args.desc:
-        generate_descriptors(args.data_dir, debug_max=args.debug_max, debug=args.debug, args.workers)
+        generate_descriptors(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
 
     if args.xrd:
-        generate_xrd(args.data_dir, debug_max=args.debug_max, debug=args.debug, args.workers)
+        generate_xrd(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
 
     if args.tokenize:
-        tokenize_datasets(args.data_dir, debug_max=args.debug_max, debug=args.debug, args.workers)
+        tokenize_datasets(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
     
     if args.serialize:
         serialize(args.data_dir)
