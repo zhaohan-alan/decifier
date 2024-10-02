@@ -1,5 +1,4 @@
 #!/bin/bash
-# #SBATCH -p gpu --gres=gpu:titanrtx:1
 #SBATCH --time 2-00:00:00
 #SBATCH --job-name=prepare_data
 #SBATCH --array 0
