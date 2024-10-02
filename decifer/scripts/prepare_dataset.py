@@ -2,6 +2,7 @@ import sys
 sys.path.append("./")
 import os
 import io
+import gc
 import pickle
 import argparse
 from pymatgen.io.cif import CifWriter, Structure, CifParser
@@ -193,7 +194,6 @@ def process_single_cif(args):
             pickle.dump(output_data, f)
         os.rename(temp_filename, output_filename) # File is secure, renaming
 
-        return output_data
     except Exception as e:
         if debug:
             print(f"Error processing {cif}: {e}")
@@ -203,7 +203,16 @@ def process_single_cif(args):
         # Append the file name the failed_files manager list
         failed_files.append(name)
 
-        return None
+    finally:
+        try:
+            del struct
+        except:
+            pass
+        try:
+            del cif_content
+        except NameError:
+            pass
+        gc.collect()
 
 def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_occ_less_than_one=False, debug_max=None, debug=False):
     """
@@ -282,7 +291,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
             
             for _ in tqdm(range(len(tasks)), total=len(cifs), desc="Preprocessing CIFs...", leave=False):
                 try:
-                    result = results_iterator.next(timeout = 60) # Worker function takes care of saving individual files
+                    results_iterator.next(timeout = 60) # Worker function takes care of saving individual files
                 except TimeoutError as e:
                     continue
             
@@ -339,6 +348,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
         print(f"Saving {prefix} dataset...", end="")
         with gzip.open(os.path.join(pre_dir, f"{prefix}_dataset.pkl.gz"), "wb") as pkl:
             pickle.dump(data, pkl)
+        del data
         print("DONE.")
 
     # Centralized metadata for preprocessing
@@ -356,57 +366,83 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
         "spacegroups": spacegroup_dict,
     }
     save_metadata(metadata, data_dir)
-        
+    
     print(f"Prepared CIF files have been saved to {pre_dir}")
+
+    # Free up memory
+    del cifs, tasks, valid_results, names, strat_keys, cif_contents, species, spacegroups, compositions
+    gc.collect()
+
+    print("Freeing up memory..")
     print()
 
 def generate_single_descriptors(args):
 
     # Extract arguments
     name, cif_content, species, r_cut_soap, n_max_soap, l_max_soap, sigma_soap, rbf_soap, compression_mode_soap, r_cut_acsf, periodic, sparse, debug, desc_files_dir = args
+    logger = logging.getLogger()
 
-    # Load structure and parse to ASE
-    ase_structure = parser_from_string(cif_content).get_structures()[0].to_ase_atoms()
+    try:
+        # Load structure and parse to ASE
+        ase_structure = parser_from_string(cif_content).get_structures()[0].to_ase_atoms()
 
-    # Setup SOAP object
-    soap = SOAP(
-        species = species,
-        r_cut = r_cut_soap,
-        n_max = n_max_soap,
-        l_max = l_max_soap,
-        sigma = sigma_soap,
-        rbf = rbf_soap,
-        compression = {
-            'mode': compression_mode_soap,
-            'weighting': None,
-        },
-        periodic = periodic,
-        sparse = sparse,
-    )
+        # Setup SOAP object
+        soap = SOAP(
+            species = species,
+            r_cut = r_cut_soap,
+            n_max = n_max_soap,
+            l_max = l_max_soap,
+            sigma = sigma_soap,
+            rbf = rbf_soap,
+            compression = {
+                'mode': compression_mode_soap,
+                'weighting': None,
+            },
+            periodic = periodic,
+            sparse = sparse,
+        )
 
-    # Setup ACSF
-    acsf = ACSF(
-        species = species,
-        r_cut = r_cut_acsf,
-        periodic = periodic,
-    )
+        # Setup ACSF
+        acsf = ACSF(
+            species = species,
+            r_cut = r_cut_acsf,
+            periodic = periodic,
+        )
 
-    # Calculate descriptors and return dict
-    descriptor_dict = {
-        "SOAP": soap.create(ase_structure, centers=[0])[0],
-        "ACSF": acsf.create(ase_structure, centers=[0])[0],
-    }
-    
-    # Save output to pickle file
-    soap, acsf = descriptor_dict['SOAP'], descriptor_dict['ACSF']
-    output_data = (name, cif_content, soap, acsf)
-    output_filename = os.path.join(desc_files_dir, name + '.pkl')
-    temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
-    with open(temp_filename, 'wb') as f:
-        pickle.dump(output_data, f)
-    os.rename(temp_filename, output_filename) # File is secure, renaming
+        # Calculate descriptors and return dict
+        descriptor_dict = {
+            "SOAP": soap.create(ase_structure, centers=[0])[0],
+            "ACSF": acsf.create(ase_structure, centers=[0])[0],
+        }
+        
+        # Save output to pickle file
+        soap, acsf = descriptor_dict['SOAP'], descriptor_dict['ACSF']
+        output_data = (name, cif_content, soap, acsf)
+        output_filename = os.path.join(desc_files_dir, name + '.pkl')
+        temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
+        with open(temp_filename, 'wb') as f:
+            pickle.dump(output_data, f)
+        os.rename(temp_filename, output_filename) # File is secure, renaming
 
-    return output_data
+    except Exception as e:
+        if debug:
+            print(f"Error processing {cif}: {e}")
+        logger.exception(f"Exception in worker function calculating descriptors for CIF {cif}, with error:\n {e}\n\n")
+
+    finally:
+        try:
+            del ase_structure
+        except NameError:
+            pass
+        try:
+            del soap
+        except NameError:
+            pass
+        try:
+            del acsf
+        except NameError:
+            pass
+        gc.collect()
 
 def generate_descriptors(
     data_dir,
@@ -509,7 +545,7 @@ def generate_descriptors(
                 
                 for _ in tqdm(range(len(tasks)), total=len(data), desc="Calculating descriptors...", leave=False):
                     try:
-                        result = results_iterator.next(timeout = 60)
+                        results_iterator.next(timeout = 60)
                     except TimeoutError as e:
                         continue
 
@@ -531,6 +567,7 @@ def generate_descriptors(
         output_path = os.path.join(desc_dir, f"{dataset_name}_dataset_descriptors.pkl.gz")
         with gzip.open(output_path, "wb") as pkl:
             pickle.dump(valid_results, pkl)
+        del data
         print("DONE.")
 
     # Initialize metadata for XRD calculation
@@ -551,6 +588,12 @@ def generate_descriptors(
     save_metadata(metadata, data_dir)
         
     print(f"Generated descriptors have been saved to {desc_dir}")
+
+    # Free up memory
+    del tasks, valid_results
+    gc.collect()
+
+    print("Freeing up memory..")
     print()
 
 def generate_single_xrd(args):
@@ -562,59 +605,81 @@ def generate_single_xrd(args):
     # Generate structure from cif_content
     try:
         struct = parser_from_string(cif_content).get_structures()[0]
-    except Exception as e:
-        if debug:
-            print(f"Error processing {name}: {e}")
-        logger.exception(f"Exception in worker function with CifParser for CIF with name {name}, with error:\n {e}\n\n")
-        return None
 
-    try:
         # Init calculator object
         xrd_calc = XRDCalculator(wavelength=wavelength)
 
         # Get XRD pattern
         xrd_pattern = xrd_calc.get_pattern(struct)
 
+        # Convert to Q
+        theta = np.radians(xrd_pattern.x / 2)
+        q_discrete = 4 * np.pi * np.sin(theta) / xrd_calc.wavelength # Q = 4 pi sin theta / lambda
+        i_discrete = xrd_pattern.y / (np.max(xrd_pattern.y) + 1e-16)
+
+        # Define Q grid
+        q_cont = np.arange(qmin, qmax, qstep)
+
+        # Init itensity array
+        i_cont = np.zeros_like(q_cont)
+
+        # Apply Gaussian broadening
+        for q_peak, intensity in zip(q_discrete, xrd_pattern.y):
+            gaussian_peak = intensity * np.exp(-0.5 * ((q_cont - q_peak) / fwhm) ** 2)
+            i_cont += gaussian_peak
+
+        # Normalize intensities
+        i_cont /= (np.max(i_cont) + 1e-16)
+
+        # Add noise based on SNR
+        if snr < 100.:
+            noise = np.random.normal(0, np.max(i_cont) / snr, size=i_cont.shape)
+            i_cont = i_cont + noise
+        i_cont[i_cont < 0] = 0 # Strictly positive signal (counts)
+
+        # Save output to pickle file
+        output_data = (name, np.vstack([q_discrete, i_discrete]), np.vstack([q_cont, i_cont]), cif_content, soap, acsf)
+        output_filename = os.path.join(xrd_files_dir, name + '.pkl')
+        temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
+        with open(temp_filename, 'wb') as f:
+            pickle.dump(output_data, f)
+        os.rename(temp_filename, output_filename) # File is secure, renaming
+
     except Exception as e:
         if debug:
             print(f"Error processing {name}: {e}")
         logger.exception(f"Exception in worker function with xrd calculation for CIF with name {name}, with error:\n {e}\n\n")
-        return None
 
-    # Convert to Q
-    theta = np.radians(xrd_pattern.x / 2)
-    q_discrete = 4 * np.pi * np.sin(theta) / xrd_calc.wavelength # Q = 4 pi sin theta / lambda
-    i_discrete = xrd_pattern.y / (np.max(xrd_pattern.y) + 1e-16)
-
-    # Define Q grid
-    q_cont = np.arange(qmin, qmax, qstep)
-
-    # Init itensity array
-    i_cont = np.zeros_like(q_cont)
-
-    # Apply Gaussian broadening
-    for q_peak, intensity in zip(q_discrete, xrd_pattern.y):
-        gaussian_peak = intensity * np.exp(-0.5 * ((q_cont - q_peak) / fwhm) ** 2)
-        i_cont += gaussian_peak
-
-    # Normalize intensities
-    i_cont /= (np.max(i_cont) + 1e-16)
-
-    # Add noise based on SNR
-    if snr < 100.:
-        noise = np.random.normal(0, np.max(i_cont) / snr, size=i_cont.shape)
-        i_cont = i_cont + noise
-    i_cont[i_cont < 0] = 0 # Strictly positive signal (counts)
-
-    # Save output to pickle file
-    output_data = (name, np.vstack([q_discrete, i_discrete]), np.vstack([q_cont, i_cont]), cif_content, soap, acsf)
-    output_filename = os.path.join(xrd_files_dir, name + '.pkl')
-    temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
-    with open(temp_filename, 'wb') as f:
-        pickle.dump(output_data, f)
-    os.rename(temp_filename, output_filename) # File is secure, renaming
-
-    return output_data
+    finally:
+        try:
+            del struct
+        except NameError:
+            pass
+        try:
+            del xrd_pattern
+        except NameError:
+            pass
+        try:
+            del theta
+        except NameError:
+            pass
+        try:
+            del q_discrete
+        except NameError:
+            pass
+        try:
+            del i_discrete
+        except NameError:
+            pass
+        try:
+            del q_cont
+        except NameError:
+            pass
+        try:
+            del i_cont
+        except NameError:
+            pass
+        gc.collect()
 
 def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwhm=0.05, snr=100., debug_max=None, debug=False):
     """
@@ -686,7 +751,7 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
                 
                 for _ in tqdm(range(len(tasks)), total=len(data), desc="Calculating XRD...", leave=False):
                     try:
-                        result = results_iterator.next(timeout = 60)
+                        results_iterator.next(timeout = 60)
                     except TimeoutError as e:
                         continue
 
@@ -708,6 +773,7 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
         output_path = os.path.join(xrd_dir, f"{dataset_name}_dataset_xrd.pkl.gz")
         with gzip.open(output_path, "wb") as pkl:
             pickle.dump(valid_results, pkl)
+        del data
         print("DONE.")
 
     # Initialize metadata for XRD calculation
@@ -726,6 +792,12 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
     save_metadata(metadata, data_dir)
         
     print(f"Generated XRD have been saved to {xrd_dir}")
+
+    # Free up memory
+    del tasks, valid_results
+    gc.collect()
+
+    print("Freeing up memory..")
     print()
 
 def tokenize_single_datum(args):
@@ -734,37 +806,50 @@ def tokenize_single_datum(args):
     name, xrd_discrete, xrd_cont, cif_content, soap, acsf, debug, tokenized_files_dir = args
     logger = logging.getLogger()
 
-    # Convert discrete xrd to string
-    xrd_discrete_str = "\n".join([f"{x:5.4f}, {y:5.4f}" for (x,y) in zip(*xrd_discrete)])
-        
-    # Remove symmetries and header from cif_content before tokenizing
-    cif_content = remove_cif_header(cif_content)
-    cif_content_reduced = replace_data_formula_with_nonreduced_formula(cif_content)
-    cif_content_nosym = replace_symmetry_loop_with_P1(cif_content_reduced)
-
-    # Initialise Tokenizer
-    tokenizer = Tokenizer()
-    tokenize = tokenizer.tokenize_cif
-    encode = tokenizer.encode
-
     try:
+        # Convert discrete xrd to string
+        xrd_discrete_str = "\n".join([f"{x:5.4f}, {y:5.4f}" for (x,y) in zip(*xrd_discrete)])
+            
+        # Remove symmetries and header from cif_content before tokenizing
+        cif_content = remove_cif_header(cif_content)
+        cif_content_reduced = replace_data_formula_with_nonreduced_formula(cif_content)
+        cif_content_nosym = replace_symmetry_loop_with_P1(cif_content_reduced)
+
+        # Initialise Tokenizer
+        tokenizer = Tokenizer()
+        tokenize = tokenizer.tokenize_cif
+        encode = tokenizer.encode
+
         cif_tokenized = encode(tokenize(cif_content_nosym))
         xrd_tokenized = encode(tokenize(xrd_discrete_str))
+    
+        # Save output to pickle file
+        output_data = name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content_reduced, cif_tokenized, soap, acsf
+        output_filename = os.path.join(tokenized_files_dir, name + '.pkl')
+        temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
+        with open(temp_filename, 'wb') as f:
+            pickle.dump(output_data, f)
+        os.rename(temp_filename, output_filename) # File is secure, renaming
+
     except Exception as e:
         if debug:
             print(f"Error processing {name}: {e}")
         logger.exception(f"Exception in worker function with tokenization for CIF with name {name}, with error:\n {e}\n\n")
-        return None
-    
-    # Save output to pickle file
-    output_data = name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content_reduced, cif_tokenized, soap, acsf
-    output_filename = os.path.join(tokenized_files_dir, name + '.pkl')
-    temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
-    with open(temp_filename, 'wb') as f:
-        pickle.dump(output_data, f)
-    os.rename(temp_filename, output_filename) # File is secure, renaming
 
-    return output_data
+    finally:
+        try:
+            del cif_tokenized
+        except NameError:
+            pass
+        try:
+            del xrd_tokenized
+        except NameError:
+            pass
+        try:
+            del tokenizer
+        except NameError:
+            pass
+        gc.collect()
 
 def tokenize_datasets(data_dir, debug_max=None, debug=False):
     # Find train / val / test
@@ -818,7 +903,7 @@ def tokenize_datasets(data_dir, debug_max=None, debug=False):
                 
                 for _ in tqdm(range(len(tasks)), total=len(data), desc="Tokenizing CIFs and XRDs...", leave=False):
                     try:
-                        result = results_iterator.next(timeout = 60)
+                        results_iterator.next(timeout = 60)
                     except TimeoutError as e:
                         continue
         
@@ -841,6 +926,7 @@ def tokenize_datasets(data_dir, debug_max=None, debug=False):
         output_path = os.path.join(tokenized_dir, f"{dataset_name}_dataset_xrd_tokenized.pkl.gz")
         with gzip.open(output_path, "wb") as pkl:
             pickle.dump(valid_results, pkl)
+        del data
         print("DONE.")
 
     # Initialize metadata for tokenization
@@ -852,6 +938,12 @@ def tokenize_datasets(data_dir, debug_max=None, debug=False):
     save_metadata(metadata, data_dir)
         
     print(f"Tokenized data have been saved to {tokenized_dir}")
+
+    # Free up memory
+    del tasks, valid_results
+    gc.collect()
+
+    print("Freeing up memory..")
     print()
 
 def serialize(data_dir):
