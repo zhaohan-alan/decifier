@@ -214,7 +214,7 @@ def process_single_cif(args):
             pass
         gc.collect()
 
-def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_occ_less_than_one=False, debug_max=None, debug=False):
+def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_occ_less_than_one=False, debug_max=None, debug=False, workers=None):
     """
     Preprocess CIF files by extracting their structure and creating a train/val/test split.
 
@@ -285,8 +285,7 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
         listener = log_listener(log_queue, pre_dir)
 
         # Parallel processing of CIF files using multiprocessing
-        num_workers = min(cpu_count(), len(cifs))  # Use available CPU cores, limited to number of files
-        with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+        with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
             results_iterator = pool.imap_unordered(process_single_cif, tasks)
             
             for _ in tqdm(range(len(tasks)), total=len(cifs), desc="Preprocessing CIFs...", leave=False):
@@ -457,6 +456,7 @@ def generate_descriptors(
     sparse: bool = False,
     debug_max: int = None,
     debug: bool = False,
+    workers: int = None,
 ):
     """
     Calculate ...
@@ -539,8 +539,7 @@ def generate_descriptors(
             listener = log_listener(log_queue, desc_dir)
 
             # Parallel processing of CIF files using multiprocessing
-            num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
-            with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+            with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
                 results_iterator = pool.imap_unordered(generate_single_descriptors, tasks)
                 
                 for _ in tqdm(range(len(tasks)), total=len(data), desc="Calculating descriptors...", leave=False):
@@ -681,7 +680,7 @@ def generate_single_xrd(args):
             pass
         gc.collect()
 
-def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwhm=0.05, snr=100., debug_max=None, debug=False):
+def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwhm=0.05, snr=100., debug_max=None, debug=False, workers=None):
     """
     Calculate the XRD pattern from a CIF string using pytmatgen with Gaussian peak broadening and noise.
 
@@ -745,8 +744,7 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
             listener = log_listener(log_queue, xrd_dir)
 
             # Parallel processing of CIF files using multiprocessing
-            num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
-            with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+            with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
                 results_iterator = pool.imap_unordered(generate_single_xrd, tasks)
                 
                 for _ in tqdm(range(len(tasks)), total=len(data), desc="Calculating XRD...", leave=False):
@@ -851,7 +849,7 @@ def tokenize_single_datum(args):
             pass
         gc.collect()
 
-def tokenize_datasets(data_dir, debug_max=None, debug=False):
+def tokenize_datasets(data_dir, debug_max=None, debug=False, workers=None):
     # Find train / val / test
     xrd_dir = os.path.join(data_dir, "xrd")
     datasets = glob(os.path.join(xrd_dir, '*.pkl.gz'))
@@ -897,8 +895,7 @@ def tokenize_datasets(data_dir, debug_max=None, debug=False):
             listener = log_listener(log_queue, tokenized_dir)
 
             # Parallel processing of CIF files using multiprocessing
-            num_workers = min(cpu_count(), len(data))  # Use available CPU cores, limited to number of files
-            with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+            with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
                 results_iterator = pool.imap_unordered(tokenize_single_datum, tasks)
                 
                 for _ in tqdm(range(len(tasks)), total=len(data), desc="Tokenizing CIFs and XRDs...", leave=False):
@@ -1022,8 +1019,15 @@ if __name__ == "__main__":
 
     parser.add_argument("--debug_max", help="Debug-feature: max number of files to process", type=int, default=0)
     parser.add_argument("--debug", help="Debug-feature: whether to print debug messages", action="store_true")
+    parser.add_argument("--workers", help="Number of workers for each processing step", type=int, default=0)
 
     args = parser.parse_args()
+
+    # workers
+    if args.workers == 0:
+        args.workers = cpu_count() - 1
+    else:
+        args.workers = min(cpu_count() - 1, args.workers)
 
     # Make data prep directory and update data_dir
     args.data_dir = os.path.join(args.data_dir, args.name)
@@ -1034,16 +1038,16 @@ if __name__ == "__main__":
         args.debug_max = None
 
     if args.preprocess:
-        preprocess(args.data_dir, args.seed, args.group_size, args.decimal_places, args.remove_occ, args.debug_max, args.debug)
+        preprocess(args.data_dir, args.seed, args.group_size, args.decimal_places, args.remove_occ, args.debug_max, args.debug, args.workers)
     
     if args.desc:
-        generate_descriptors(args.data_dir, debug_max=args.debug_max, debug=args.debug)
+        generate_descriptors(args.data_dir, debug_max=args.debug_max, debug=args.debug, args.workers)
 
     if args.xrd:
-        generate_xrd(args.data_dir, debug_max=args.debug_max, debug=args.debug)
+        generate_xrd(args.data_dir, debug_max=args.debug_max, debug=args.debug, args.workers)
 
     if args.tokenize:
-        tokenize_datasets(args.data_dir, debug_max=args.debug_max, debug=args.debug)
+        tokenize_datasets(args.data_dir, debug_max=args.debug_max, debug=args.debug, args.workers)
     
     if args.serialize:
         serialize(args.data_dir)
