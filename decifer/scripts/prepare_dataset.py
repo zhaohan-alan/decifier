@@ -349,7 +349,7 @@ def generate_single_descriptors(args):
     name, cif_content, species, r_cut_soap, n_max_soap, l_max_soap, sigma_soap, rbf_soap, compression_mode_soap, r_cut_acsf, periodic, sparse, debug, desc_files_dir = args
 
     # Load structure and parse to ASE
-    ase_structure = parser_from_string(cif_content).parse_structures()[0].to_ase_atoms()
+    ase_structure = parser_from_string(cif_content).get_structures()[0].to_ase_atoms()
 
     # Setup SOAP object
     soap = SOAP(
@@ -584,8 +584,9 @@ def generate_single_xrd(args):
     i_cont /= (np.max(i_cont) + 1e-16)
 
     # Add noise based on SNR
-    noise = np.random.normal(0, np.max(i_cont) / snr, size=i_cont.shape)
-    i_cont = i_cont + noise
+    if snr < 100.:
+        noise = np.random.normal(0, np.max(i_cont) / snr, size=i_cont.shape)
+        i_cont = i_cont + noise
     i_cont[i_cont < 0] = 0 # Strictly positive signal (counts)
 
     # Save output to pickle file
@@ -598,7 +599,7 @@ def generate_single_xrd(args):
 
     return output_data
 
-def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwhm=0.05, snr=80., debug_max=None, debug=False):
+def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwhm=0.05, snr=100., debug_max=None, debug=False):
     """
     Calculate the XRD pattern from a CIF string using pytmatgen with Gaussian peak broadening and noise.
 
@@ -609,7 +610,7 @@ def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwh
         qmax (float): Maximum Q value (default is 20).
         qstep (float): Step size for Q values (default is 0.01).
         fwhm (float): Full-width at half-maximum for Gaussian broadening (default is 0.1).
-        snr (float): Signal-to-noise ratio for adding noise the the pattern (default is 20).
+        snr (float): Signal-to-noise ratio for adding noise the the pattern (default is 100.).
         debug_max (int, optional): Maximum number of CIFs to process (for debugging).
         debug (bool, optional): If True, print debugging information.
 
