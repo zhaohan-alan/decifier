@@ -8,6 +8,8 @@ import argparse
 from pymatgen.io.cif import CifWriter, Structure, CifParser
 from pymatgen.core import Composition
 
+from typing import List
+
 from collections import Counter
 
 from dscribe.descriptors import SOAP, ACSF
@@ -125,207 +127,408 @@ def create_stratification_key(pmg_structure, group_size):
 
     return f"{group_start}-{group_end}"
 
-def process_single_cif(args):
-    """
-    Process a single CIF file to extract its content and spacegroup-based stratification key.
+def safe_pkl_gz(output, output_path):
+    temp_path = output_path + '.tmp' # Ensuring that only fully written files are considered when collecting
+    with gzip.open(temp_path, 'wb') as f:
+        pickle.dump(output, f)
+    os.rename(temp_path, output_path) # File is secure, renaming
 
-    Args:
-        args (tuple): Contains (cif, spacegroup_group_size, debug).
-            cif (str): Either path to the CIF file or cif files as a string.
-            spacegroup_group_size (int): Spacegroup bin size for stratification.
-            decimal_places (int): Number of decimal places to be enforced in floats in CIF file.
-            remove_occ_less_than_one (bool): If True, structures with occupancy less than 1.0 will be removed.
-            debug (bool): If True, print errors for failed CIF processing.
+def run_subtasks(
+    root: str,
+    worker_function,
+    get_from: str,
+    save_to: str,
+    add_metadata: List[str] = [],
+    task_kwargs_dict = {},
+    announcement: str = None,
+    debug: bool = False,
+    debug_max: int = None,
+    workers: int = cpu_count() - 1,
+    from_gzip: bool = False,
+):
+    if announcement:
+        print("-"*20)
+        print(announcement)
+        print("-"*20)
 
-    Returns:
-        tuple: (strat_key, cif_content) if processing is successful, else None.
-    """
-    cif, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, processed_files_dir, failed_files = args
-    logger = logging.getLogger()
+    # Locate pickles
+    from_dir = os.path.join(root, get_from)
+    pickles = glob(os.path.join(from_dir, '*.pkl.gz'))
+    if not from_gzip:
+        assert len(pickles) > 0, f"Cannot locate any files in {from_dir}"
+        paths = pickles[:debug_max]
+        assert len(paths) > 1, f"Flagging suspicious behaviour, only 1 or less CIFs present in {from_dir}: {paths}"
+    else:
+        assert len(pickles) == 1, f"from_gzip flag is raised, but more than one gzip file found in directory"
+        with gzip.open(pickles[0], 'rb') as f:
+            paths = pickle.load(f)[:debug_max]
+
+    # Make output folder
+    to_dir = os.path.join(root, save_to)
+    os.makedirs(to_dir, exist_ok=True)
+
+    # Open metadata if specified
+    if add_metadata:
+        metadata_path = os.path.join(root, "metadata.json")
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+
+        for key in add_metadata:
+            try:
+                task_kwargs_dict[key] = metadata[key]
+            except NameError:
+                print(f"Could not locate metadata with key: {key} in {metadata_path}")
+                pass
+    
+    # Check for exisiting files
+    existing_files = set(os.path.basename(f) for f in glob(os.path.join(to_dir, "*.pkl.gz")))
+
+    # Collect tasks
+    tasks = []
+    pbar = tqdm(desc="Collecting tasks...", total=len(paths), leave=False)
+    for path in paths:
+        if isinstance(path, str):
+            name = os.path.basename(path)
+        else:
+            name, _ = path
+        if name in existing_files:
+            pbar.update(1)
+            continue
+        tasks.append(
+            (path, task_kwargs_dict, debug, to_dir)
+        )
+        pbar.update(1)
+    pbar.close()
+
+    if not tasks:
+        print("All task have already been executed for {save_to}, skipping...", end='\n')
+    else:
+        # Keep track of optional worker metadata
+        worker_metadata = {}
+        # Create a queue for logging and start the logging process
+        log_queue = mp.Queue()
+        listener = log_listener(log_queue, to_dir)
+
+        # Parallel processing of CIF files using multiprocessing
+        with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+            results_iterator = pool.imap_unordered(worker_function, tasks)
+            
+            for _ in tqdm(range(len(tasks)), total=len(tasks), desc="Executing tasks...", leave=False):
+                try:
+                    worker_metadata_dict = results_iterator.next(timeout = 60)
+                    if worker_metadata_dict is not None:
+                        for key, values in worker_metadata_dict.items():
+                            if key in worker_metadata:
+                                worker_metadata[key].extend(values)
+                            else:
+                                worker_metadata[key] = []
+                                worker_metadata[key].extend(values)
+                except TimeoutError as e:
+                    continue
+
+        # Add worker metadata
+        for key in worker_metadata.keys():
+            worker_metadata[key] = Counter(worker_metadata[key])
+        save_metadata(worker_metadata, root)
+
+        # Stop log listener and flush
+        listener.stop()
+        logging.shutdown()
+
+    n_files = len(paths)
+    n_successful_files = len(glob(os.path.join(to_dir, '*.pkl.gz')))
+    print(f"Reduction in dataset: {n_files} samples --> {n_successful_files} samples")
+    
+    additional_metadata = {save_to: task_kwargs_dict}
+    save_metadata(additional_metadata, root)
+    
+    # Free up memory
+    del tasks
+    gc.collect()
+
+def preprocess_worker(args):
+    
+    # Extract arguments
+    obj, task_dict, debug, to_dir = args
+
     try:
         # Make structure
-        if isinstance(cif, str):
-            struct = Structure.from_file(cif)
-            name = os.path.basename(cif)
-        elif isinstance(cif, tuple):
-            name, cif = cif
-            struct = parser_from_string(cif).get_structures()[0]
+        if isinstance(obj, str): # Path
+            structure = Structure.from_file(obj)
+            cif_name = os.path.basename(obj)
+        elif isinstance(obj, tuple): # cif string from pkl
+            cif_name, cif_string = obj
+            structure = parser_from_string(cif_string).get_structures()[0]
         else:
-            raise Exception()
+            raise Exception("Unexpected format found in preprocessing step of {obj}")
         
         # Option for removing structures with occupancies below 1
-        if remove_occ_less_than_one:
-            for site in struct:
+        if task_dict['remove_occ_less_than_one']:
+            for site in structure:
                 occ = list(site.species.as_dict().values())[0]
                 if occ < 1:
                     raise Exception("Occupancy below 1.0 found")
 
         # Get stratification key
-        strat_key = create_stratification_key(struct, spacegroup_group_size)
+        strat_key = create_stratification_key(structure, task_dict['spacegroup_strat_group_size'])
 
         # Get raw content of CIF in string
-        cif_content = CifWriter(struct=struct, symprec=0.1).__str__()
+        cif_string = CifWriter(struct=structure, symprec=0.1).__str__()
 
         # Extract formula units and remove if Z=0
-        formula_units = extract_formula_units(cif_content)
+        formula_units = extract_formula_units(cif_string)
         if formula_units == 0:
             raise Exception()
 
         # Remove oxidation state information
-        cif_content = remove_oxidation_loop(cif_content)
+        cif_string = remove_oxidation_loop(cif_string)
 
         # Number precision rounding
-        cif_content = round_numbers(cif_content, decimal_places)
-        cif_content = format_occupancies(cif_content, decimal_places)
+        cif_string = round_numbers(cif_string, task_dict['decimal_places'])
+        cif_string = format_occupancies(cif_string, task_dict['decimal_places'])
 
         # Add atomic props block
-        cif_content = add_atomic_props_block(cif_content)
+        cif_string = add_atomic_props_block(cif_string)
 
         # Extract species, spacegroup and composition of crystal structure
-        composition = Composition(extract_formula_nonreduced(cif_content)).as_dict()
+        composition = Composition(extract_formula_nonreduced(cif_string)).as_dict()
         species = set(composition.keys())
-        spacegroup = extract_space_group_symbol(cif_content)
+        spacegroup = extract_space_group_symbol(cif_string)
 
         # Save output to pickle file
-        output_data = (name, strat_key, cif_content, species, spacegroup, composition)
-        output_filename = os.path.join(processed_files_dir, name + '.pkl')
-        temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
-        with open(temp_filename, 'wb') as f:
-            pickle.dump(output_data, f)
-        os.rename(temp_filename, output_filename) # File is secure, renaming
+        output_dict = {
+            'cif_name': cif_name,
+            'cif_string': cif_string,
+            'strat_key': strat_key,
+            'species': species,
+            'spacegroup': spacegroup,
+            'composition': composition,
+        }
+        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
+        safe_pkl_gz(output_dict, output_path)
+
+        return {'species': species, 'spacegroups': spacegroup}
 
     except Exception as e:
         if debug:
-            print(f"Error processing {cif}: {e}")
+            print(f"Error processing {cif_name}: {e}")
 
-        logger.exception(f"Exception in worker function pre-processing CIF {cif}, with error:\n {e}\n\n")
+        logger = logging.getLogger()
+        logger.exception(f"Exception in worker function pre-processing CIF {cif_name}, with error:\n {e}\n\n")
         
         # Append the file name the failed_files manager list
-        failed_files.append(name)
+        #failed_files.append(cif_name)
 
-    finally:
-        try:
-            del struct
-        except:
-            pass
-        try:
-            del cif_content
-        except NameError:
-            pass
-        gc.collect()
+        return None
 
-def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_occ_less_than_one=False, debug_max=None, debug=False, workers=None):
-    """
-    Preprocess CIF files by extracting their structure and creating a train/val/test split.
+def descriptor_worker(args):
 
+    # Extract arguments
+    from_path, task_dict, debug, to_dir = args
+    
+    # Open pkl and extract
+    with gzip.open(from_path, "rb") as f:
+        data = pickle.load(f)
+    cif_name = data['cif_name']
+    cif_string = data['cif_string']
+    
+    # Get species
+    species = list(task_dict['species'].keys())
+
+    try:
+        # Load structure and parse to ASE
+        ase_structure = parser_from_string(cif_string).get_structures()[0].to_ase_atoms()
+
+        # Setup SOAP object
+        soap = SOAP(
+            species = species,
+            r_cut = task_dict['soap']['r_cut'],
+            n_max = task_dict['soap']['n_max'],
+            l_max = task_dict['soap']['l_max'],
+            sigma = task_dict['soap']['sigma'],
+            rbf = task_dict['soap']['rbf'],
+            compression = {
+                'mode': task_dict['soap']['compression_mode'],
+                'weighting': None,
+            },
+            periodic = task_dict['soap']['periodic'],
+            sparse = task_dict['soap']['sparse'],
+        )
+
+        # Setup ACSF
+        acsf = ACSF(
+            species = species,
+            r_cut = task_dict['acsf']['r_cut'],
+            periodic = task_dict['acsf']['periodic'],
+            sparse = task_dict['acsf']['sparse'],
+        )
+
+        # Calculate descriptors and save to pkl.gz
+        output_dict = {
+            'soap': soap.create(ase_structure, centers=[0])[0],
+            'acsf': acsf.create(ase_structure, centers=[0])[0],
+        }
+        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
+        safe_pkl_gz(output_dict, output_path)
+
+    except Exception as e:
+        if debug:
+            print(f"Error processing {cif_name}: {e}")
+        logger = logging.getLogger()
+        logger.exception(f"Exception in worker function calculating descriptors for CIF {cif_name}, with error:\n {e}\n\n")
+    
+
+def xrd_worker(args):
+
+    # Extract arguments
+    from_path, task_dict, debug, to_dir = args
+
+    # Open pkl and extract
+    with gzip.open(from_path, "rb") as f:
+        data = pickle.load(f)
+    cif_name = data['cif_name']
+    cif_string = data['cif_string']
+
+    try:
+        # Load structure and parse to ASE
+        structure = parser_from_string(cif_string).get_structures()[0]
+
+        # Init calculator object and calculate XRD pattern
+        xrd_calc = XRDCalculator(wavelength=task_dict['wavelength'])
+        xrd_pattern = xrd_calc.get_pattern(structure)
+
+        # Convert units to Q
+        theta = np.radians(xrd_pattern.x / 2)
+        q_disc = 4 * np.pi * np.sin(theta) / xrd_calc.wavelength # Q = 4 pi sin theta / lambda
+        iq_disc = xrd_pattern.y / (np.max(xrd_pattern.y) + 1e-16)
+
+        # Define Q grid
+        q_cont = np.arange(task_dict['qmin'], task_dict['qmax'], task_dict['qstep'])
+
+        # Init itensity array
+        iq_cont = np.zeros_like(q_cont)
+
+        # Apply Gaussian broadening
+        for q_peak, iq_peak in zip(q_disc, xrd_pattern.y):
+            gaussian_peak = iq_peak * np.exp(-0.5 * ((q_cont - q_peak) / task_dict['fwhm']) ** 2)
+            iq_cont += gaussian_peak
+
+        # Normalize intensities
+        eps = 1e-16
+        iq_cont /= (np.max(iq_cont) + eps)
+
+        # Add noise based on SNR
+        if task_dict['snr'] < 100.:
+            noise = np.random.normal(0, np.max(iq_cont) / task_dict['snr'], size=iq_cont.shape)
+            iq_cont = iq_cont + noise
+
+        # Strictly positive singals (counts)
+        iq_cont[iq_cont < 0] = 0
+
+        # Save output to pkl.gz file
+        output_dict = {
+            'cif_name': cif_name,
+            'xrd_disc': {
+                'q': q_disc,
+                'iq': iq_disc,
+            },
+            'xrd_cont': {
+                'q': q_cont,
+                'iq': iq_cont,
+            },
+        }
+        
+        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
+        safe_pkl_gz(output_dict, output_path)
+
+    except Exception as e:
+        if debug:
+            print(f"Error processing {cif_name}: {e}")
+        logger = logging.getLogger()
+        logger.exception(f"Exception in worker function with xrd calculation for CIF with name {cif_name}, with error:\n {e}\n\n")
+
+def cif_tokenizer_worker(args):
+    
+    # Extract arguments
+    from_path, task_dict, debug, to_dir = args
+
+    # Open pkl and extract
+    with gzip.open(from_path, "rb") as f:
+        data = pickle.load(f)
+    cif_name = data['cif_name']
+    cif_string = data['cif_string']
+
+    try:
+        # Remove symmetries and header from cif_string before tokenizing
+        cif_string = remove_cif_header(cif_string)
+        cif_string_reduced = replace_data_formula_with_nonreduced_formula(cif_string)
+        cif_string_nosym = replace_symmetry_loop_with_P1(cif_string_reduced)
+
+        # Initialise Tokenizer
+        tokenizer = Tokenizer()
+        tokenize = tokenizer.tokenize_cif
+        encode = tokenizer.encode
+
+        cif_tokenized = encode(tokenize(cif_string_nosym))
+    
+        # Save output to pickle file
+        output_dict = {
+            'cif_tokenized': cif_tokenized,
+        }
+        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
+        safe_pkl_gz(output_dict, output_path)
+
+    except Exception as e:
+        if debug:
+            print(f"Error processing {cif_name}: {e}")
+        logger = logging.getLogger()
+        logger.exception(f"Exception in worker function with tokenization for CIF with name {cif_name}, with error:\n {e}\n\n")
+
+def xrd_tokenizer_worker(args):
+    
+    # Extract arguments
+    from_path, task_dict, debug, to_dir = args
+
+    # Open pkl and extract
+    with gzip.open(from_path, "rb") as f:
+        data = pickle.load(f)
+    cif_name = data['cif_name']
+    xrd_disc = data['xrd_disc']
+
+    try:
+        # Convert discrete xrd to string
+        xrd_disc_str = "\n".join([f"{x:5.4f}, {y:5.4f}" for (x,y) in zip(xrd_disc['q'], xrd_disc['iq'])])
+
+        # Initialise Tokenizer
+        tokenizer = Tokenizer()
+        tokenize = tokenizer.tokenize_cif
+        encode = tokenizer.encode
+
+        xrd_tokenized = encode(tokenize(xrd_disc_str))
+    
+        # Save output to pickle file
+        output_dict = {
+            'xrd_tokenized': xrd_tokenized,
+        }
+        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
+        safe_pkl_gz(output_dict, output_path)
+
+    except Exception as e:
+        if debug:
+            print(f"Error processing {cif_name}: {e}")
+        logger = logging.getLogger()
+        logger.exception(f"Exception in worker function with tokenization for CIF with name {cif_name}, with error:\n {e}\n\n")
+
+def serialize(data_dir):
+    '''
+    Combines the dataset files to HDF5 file format.
+    
     Args:
-        data_dir (str): Directory containing the raw CIF files.
-        seed (int): Random seed for reproducibility.
-        spacegroup_group_size (int): Group size for spacegroup stratification.
-        decimal_places (int): Number of decimal places to be enforced in floats in CIF file.
-        remove_occ_less_than_one (bool): If True, structures with occupancy less than 1.0 will be removed.
-        debug_max (int, optional): Maximum number of CIFs to process (for debugging).
-        debug (bool, optional): If True, print debugging information.
-
+        data_dir (str): Directory containing the dataset files.
+    
     Returns:
         None
-    """
-
-    # Find the raw files
-    raw_dir = os.path.join("/".join(data_dir.split("/")[:-1]), "raw")
-    raw_pkl_gz = os.path.join("/".join(data_dir.split("/")[:-1]), "raw.pkl.gz")
-    if os.path.exists(raw_dir):
-        print(f"Found raw files folder, {raw_dir}")
-        cifs = sorted(glob(os.path.join(raw_dir, "*.cif")))[:debug_max]
-    elif os.path.isfile(raw_pkl_gz):
-        with gzip.open(raw_pkl_gz, 'rb') as f:
-            cifs = pickle.load(f)[:debug_max]
-    else:
-        raise Exception("Cannot find path to raw .cif files in {data_dir}")
-    # Assert that files exists
-    assert len(cifs) > 0, f"Cannot find any .cif files in {raw_dir}"
-
-    # Output directory
-    pre_dir = os.path.join(data_dir, "preprocessed")
-    os.makedirs(pre_dir, exist_ok=True)
-
-    # Directory for individual files
-    processed_files_dir = os.path.join(pre_dir, "preprocessed_files")
-    os.makedirs(processed_files_dir, exist_ok=True)
-
-    # Create manager for failed structures
-    manager = Manager()
-    error_files = manager.list()
-    error_file_path = os.path.join(pre_dir, "error_files.txt")
-    if os.path.exists(error_file_path):
-        with open(error_file_path, 'r') as f:
-            error_files.extend([line.strip() for line in f])
-
-    # Check which files have already been processed
-    existing_processed_files = set(os.path.basename(f) for f in glob(os.path.join(processed_files_dir, "*.pkl")))
-
-    # Prepare arguments for parallel processing
-    tasks = []
-    for path in cifs:
-        if isinstance(path, str): # If raw cifs come in folder
-            name = os.path.basename(path)
-        elif isinstance(path, tuple): # If raw cifs come in pkl.gz
-            name = path[0]
-        else:
-            continue
-        output_filename = name + '.pkl'
-        if (output_filename not in existing_processed_files) and (name not in error_files):
-            tasks.append((path, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, processed_files_dir, error_files))
-
-    if not tasks:
-        print("All CIFs have been preprocessed, skipping...")
-    else:
-        # Create a queue for logging and start the logging process
-        log_queue = mp.Queue()
-        listener = log_listener(log_queue, pre_dir)
-
-        # Parallel processing of CIF files using multiprocessing
-        with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-            results_iterator = pool.imap_unordered(process_single_cif, tasks)
-            
-            for _ in tqdm(range(len(tasks)), total=len(cifs), desc="Preprocessing CIFs...", leave=False):
-                try:
-                    species_i, spacegroups_i = results_iterator.next(timeout = 60) # Worker function takes care of saving individual files
-                    if species_i is not None:
-                        species.append(species_i)
-                    if spacegroups_i is not None:
-                        spacegroups.append(spacegroups_i)
-                except TimeoutError as e:
-                    continue
-            
-        # Stop log listener and flush
-        listener.stop()
-        logging.shutdown()
-
-    # Write failed files to error_files.txt
-    if error_files:
-        with open(error_file_path, "w") as f:
-            for filename in error_files:
-                f.write(f"{filename}\n")
-
-    # Collect processed data
-    #processed_files = glob(os.path.join(processed_files_dir, '*.pkl'))
-    #valid_results = []
-    #for f in processed_files:
-    #    with open(f, 'rb') as infile:
-    #        d = pickle.load(infile)
-    #        valid_results.append(d)
-    #names, strat_keys, cif_contents, species, spacegroups, compositions = zip(*valid_results)
-
-    species = [specie for subset in species for specie in subset]
-    species_dict = Counter(species)
-    spacegroup_dict = Counter(spacegroups)
-
-    print("-"*20)
-    print("PRE-PROCESSING")
-    print("-"*20)
-    print(f"Reduction in dataset: {len(cifs)} samples --> {len(cif_contents)} samples")
-
+    '''
     # Create data splits
     #train_size = int(0.8 * len(cif_contents))
     #val_size = int(0.1 * len(cif_contents))
@@ -355,608 +558,15 @@ def preprocess(data_dir, seed, spacegroup_group_size, decimal_places=4, remove_o
     #    print("DONE.")
 
     # Centralized metadata for preprocessing
-    metadata = {
+    #metadata = {
         #"train_size": train_size,
         #"val_size": val_size,
         #"test_size": test_size,
-        "total_files_processed": len(cifs),
-        "total_valid_files": len(cif_contents),
-        "decimal_places": decimal_places,
-        "remove_occ_less_than_one": remove_occ_less_than_one,
-        "seed": seed,
-        "spacegroup_group_size": spacegroup_group_size,
-        "species": species_dict,
-        "spacegroups": spacegroup_dict,
-    }
-    save_metadata(metadata, data_dir)
-    
-    print(f"Prepared CIF files have been saved to {pre_dir}")
 
-    # Free up memory
-    del cifs, tasks, valid_results, names, strat_keys, cif_contents, species, spacegroups, compositions
-    gc.collect()
-
-    print("Freeing up memory..")
-    print()
-
-def generate_single_descriptors(args):
-
-    # Extract arguments
-    name, cif_content, species, r_cut_soap, n_max_soap, l_max_soap, sigma_soap, rbf_soap, compression_mode_soap, r_cut_acsf, periodic, sparse, debug, desc_files_dir = args
-    logger = logging.getLogger()
+    pre_dir = os.path.join()
+    dataset_size = len(os.listdir()
 
     try:
-        # Load structure and parse to ASE
-        ase_structure = parser_from_string(cif_content).get_structures()[0].to_ase_atoms()
-
-        # Setup SOAP object
-        soap = SOAP(
-            species = species,
-            r_cut = r_cut_soap,
-            n_max = n_max_soap,
-            l_max = l_max_soap,
-            sigma = sigma_soap,
-            rbf = rbf_soap,
-            compression = {
-                'mode': compression_mode_soap,
-                'weighting': None,
-            },
-            periodic = periodic,
-            sparse = sparse,
-        )
-
-        # Setup ACSF
-        acsf = ACSF(
-            species = species,
-            r_cut = r_cut_acsf,
-            periodic = periodic,
-        )
-
-        # Calculate descriptors and return dict
-        descriptor_dict = {
-            "SOAP": soap.create(ase_structure, centers=[0])[0],
-            "ACSF": acsf.create(ase_structure, centers=[0])[0],
-        }
-        
-        # Save output to pickle file
-        soap, acsf = descriptor_dict['SOAP'], descriptor_dict['ACSF']
-        output_data = (name, cif_content, soap, acsf)
-        output_filename = os.path.join(desc_files_dir, name + '.pkl')
-        temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
-        with open(temp_filename, 'wb') as f:
-            pickle.dump(output_data, f)
-        os.rename(temp_filename, output_filename) # File is secure, renaming
-
-    except Exception as e:
-        if debug:
-            print(f"Error processing {cif}: {e}")
-        logger.exception(f"Exception in worker function calculating descriptors for CIF {cif}, with error:\n {e}\n\n")
-
-    finally:
-        try:
-            del ase_structure
-        except NameError:
-            pass
-        try:
-            del soap
-        except NameError:
-            pass
-        try:
-            del acsf
-        except NameError:
-            pass
-        gc.collect()
-
-def generate_descriptors(
-    data_dir,
-    r_cut_soap: float = 6.0,
-    n_max_soap: int = 2, # Number of radial basis functions for SOAP calculation
-    l_max_soap: int = 5, # Maximum degree of spherical harmonics.
-    sigma_soap: float = 1.0,
-    rbf_soap: str = 'gto',
-    compression_mode_soap: str = 'crossover',
-    r_cut_acsf: float = 6.0,
-    periodic: bool = True,
-    sparse: bool = False,
-    debug_max: int = None,
-    debug: bool = False,
-    workers: int = None,
-):
-    """
-    Calculate ...
-
-    Args:
-        data_dir (str): Directory containing the preprocessed pkl.gz files.
-        ...
-        debug_max (int, optional): Maximum number of CIFs to process (for debugging).
-        debug (bool, optional): If True, print debugging information.
-
-    Returns:
-        None
-    """
-    
-    # Find train / val / test
-    preprocessed_dir = os.path.join(data_dir, "preprocessed")
-    datasets = glob(os.path.join(preprocessed_dir, '*.pkl.gz'))
-    assert len(datasets) > 0, f"Cannot find any preprocessed files in {preprocessed_dir}"
-
-    # Make sure that there is an output
-    desc_dir = os.path.join(data_dir, "descriptors")
-    os.makedirs(desc_dir, exist_ok=True)
-
-    # Open metadata and extract species present in preprocessing
-    metadata_path = os.path.join(data_dir, "metadata.json")
-    with open(metadata_path, "r") as f:
-        metadata = json.load(f)
-    species = set(metadata["species"].keys())
-        
-    print("-"*20)
-    print("DESCRIPTORS CALCULATION")
-    print("-"*20)
-
-    for dataset_path in datasets:
-        dataset_name = dataset_path.split("/")[-1].split(".")[0].split("_")[0]
-
-        # Open pkl
-        with gzip.open(dataset_path, "rb") as f:
-            data = pickle.load(f)
-
-        ## Debug max
-        data = data[:debug_max]
-    
-        # Directory for individual files
-        desc_files_dir = os.path.join(desc_dir, f"desc_{dataset_name}_files")
-        os.makedirs(desc_files_dir, exist_ok=True)
-
-        # Check which files have already been processed
-        existing_desc_files = set(os.path.basename(f) for f in glob(os.path.join(desc_files_dir, "*.pkl")))
-
-        # Prepare arguments for parallel processing
-        tasks = []
-        for name, cif_content in data:
-            output_filename = name + '.pkl'
-            if output_filename not in existing_desc_files:
-                tasks.append(
-                    (
-                        name, 
-                        cif_content,
-                        species,
-                        r_cut_soap,
-                        n_max_soap,
-                        l_max_soap,
-                        sigma_soap,
-                        rbf_soap,
-                        compression_mode_soap,
-                        r_cut_acsf,
-                        periodic,
-                        sparse,
-                        debug, 
-                        desc_files_dir,
-                    )
-                )
-
-        if not tasks:
-            print("All descriptors have been calculated, skipping...")
-        else:
-            # Create a queue for logging and start the logging process
-            log_queue = mp.Queue()
-            listener = log_listener(log_queue, desc_dir)
-
-            # Parallel processing of CIF files using multiprocessing
-            with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-                results_iterator = pool.imap_unordered(generate_single_descriptors, tasks)
-                
-                for _ in tqdm(range(len(tasks)), total=len(data), desc="Calculating descriptors...", leave=False):
-                    try:
-                        results_iterator.next(timeout = 60)
-                    except TimeoutError as e:
-                        continue
-
-            # Stop log listener and flush
-            listener.stop()
-            logging.shutdown()
-    
-        # Collect processed data
-        desc_files = glob(os.path.join(desc_files_dir, '*.pkl'))
-        valid_results = []
-        for f in desc_files:
-            with open(f, 'rb') as infile:
-                d = pickle.load(infile)
-                valid_results.append(d)
-        print(f"Reduction in {dataset_name} dataset: {len(data)} --> {len(valid_results)}")
-
-        # Save
-        print(f"Saving {dataset_name} dataset with descriptor data...", end="")
-        output_path = os.path.join(desc_dir, f"{dataset_name}_dataset_descriptors.pkl.gz")
-        with gzip.open(output_path, "wb") as pkl:
-            pickle.dump(valid_results, pkl)
-        del data
-        print("DONE.")
-
-    # Initialize metadata for XRD calculation
-    metadata = {
-        "descriptors_parameters": {
-            "r_cut_soap": r_cut_soap,
-            "n_max_soap": n_max_soap,
-            "l_max_soap": l_max_soap,
-            "sigma_soap": sigma_soap,
-            "rbf_soap": rbf_soap,
-            "compression_mode_soap": compression_mode_soap,
-            "r_cut_acsf": r_cut_acsf,
-            "periodic": periodic,
-            "sparse": sparse,
-        }
-    }
-    # Save XRD metadata to centralized file
-    save_metadata(metadata, data_dir)
-        
-    print(f"Generated descriptors have been saved to {desc_dir}")
-
-    # Free up memory
-    del tasks, valid_results
-    gc.collect()
-
-    print("Freeing up memory..")
-    print()
-
-def generate_single_xrd(args):
-
-    # Extract arguments
-    name, cif_content, soap, acsf, wavelength, qmin, qmax, qstep, fwhm, snr, debug, xrd_files_dir = args
-    logger = logging.getLogger()
-    
-    # Generate structure from cif_content
-    try:
-        struct = parser_from_string(cif_content).get_structures()[0]
-
-        # Init calculator object
-        xrd_calc = XRDCalculator(wavelength=wavelength)
-
-        # Get XRD pattern
-        xrd_pattern = xrd_calc.get_pattern(struct)
-
-        # Convert to Q
-        theta = np.radians(xrd_pattern.x / 2)
-        q_discrete = 4 * np.pi * np.sin(theta) / xrd_calc.wavelength # Q = 4 pi sin theta / lambda
-        i_discrete = xrd_pattern.y / (np.max(xrd_pattern.y) + 1e-16)
-
-        # Define Q grid
-        q_cont = np.arange(qmin, qmax, qstep)
-
-        # Init itensity array
-        i_cont = np.zeros_like(q_cont)
-
-        # Apply Gaussian broadening
-        for q_peak, intensity in zip(q_discrete, xrd_pattern.y):
-            gaussian_peak = intensity * np.exp(-0.5 * ((q_cont - q_peak) / fwhm) ** 2)
-            i_cont += gaussian_peak
-
-        # Normalize intensities
-        i_cont /= (np.max(i_cont) + 1e-16)
-
-        # Add noise based on SNR
-        if snr < 100.:
-            noise = np.random.normal(0, np.max(i_cont) / snr, size=i_cont.shape)
-            i_cont = i_cont + noise
-        i_cont[i_cont < 0] = 0 # Strictly positive signal (counts)
-
-        # Save output to pickle file
-        output_data = (name, np.vstack([q_discrete, i_discrete]), np.vstack([q_cont, i_cont]), cif_content, soap, acsf)
-        output_filename = os.path.join(xrd_files_dir, name + '.pkl')
-        temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
-        with open(temp_filename, 'wb') as f:
-            pickle.dump(output_data, f)
-        os.rename(temp_filename, output_filename) # File is secure, renaming
-
-    except Exception as e:
-        if debug:
-            print(f"Error processing {name}: {e}")
-        logger.exception(f"Exception in worker function with xrd calculation for CIF with name {name}, with error:\n {e}\n\n")
-
-    finally:
-        try:
-            del struct
-        except NameError:
-            pass
-        try:
-            del xrd_pattern
-        except NameError:
-            pass
-        try:
-            del theta
-        except NameError:
-            pass
-        try:
-            del q_discrete
-        except NameError:
-            pass
-        try:
-            del i_discrete
-        except NameError:
-            pass
-        try:
-            del q_cont
-        except NameError:
-            pass
-        try:
-            del i_cont
-        except NameError:
-            pass
-        gc.collect()
-
-def generate_xrd(data_dir, wavelength='CuKa', qmin=0., qmax=10., qstep=0.01, fwhm=0.05, snr=100., debug_max=None, debug=False, workers=None):
-    """
-    Calculate the XRD pattern from a CIF string using pytmatgen with Gaussian peak broadening and noise.
-
-    Args:
-        data_dir (str): Directory containing the preprocessed pkl.gz files.
-        wavelength (str): X-ray wavelength (default is 'CuKa').
-        qmin (float): Minimum Q value (default is 0).
-        qmax (float): Maximum Q value (default is 20).
-        qstep (float): Step size for Q values (default is 0.01).
-        fwhm (float): Full-width at half-maximum for Gaussian broadening (default is 0.1).
-        snr (float): Signal-to-noise ratio for adding noise the the pattern (default is 100.).
-        debug_max (int, optional): Maximum number of CIFs to process (for debugging).
-        debug (bool, optional): If True, print debugging information.
-
-    Returns:
-        None
-    """
-    
-    # Find train / val / test
-    desc_dir = os.path.join(data_dir, "descriptors")
-    datasets = glob(os.path.join(desc_dir, '*.pkl.gz'))
-    assert len(datasets) > 0, f"Cannot find any files in {desc_dir}"
-
-    # Make sure that there is an output
-    xrd_dir = os.path.join(data_dir, "xrd")
-    os.makedirs(xrd_dir, exist_ok=True)
-        
-    print("-"*20)
-    print("XRD CALCULATION")
-    print("-"*20)
-
-    for dataset_path in datasets:
-        dataset_name = dataset_path.split("/")[-1].split(".")[0].split("_")[0]
-
-        # Open pkl
-        with gzip.open(dataset_path, "rb") as f:
-            data = pickle.load(f)
-
-        ## Debug max
-        data = data[:debug_max]
-    
-        # Directory for individual files
-        xrd_files_dir = os.path.join(xrd_dir, f"xrd_{dataset_name}_files")
-        os.makedirs(xrd_files_dir, exist_ok=True)
-
-        # Check which files have already been processed
-        existing_xrd_files = set(os.path.basename(f) for f in glob(os.path.join(xrd_files_dir, "*.pkl")))
-
-        # Prepare arguments for parallel processing
-        tasks = []
-        for name, cif_content, soap, acsf in data:
-            output_filename = name + '.pkl'
-            if output_filename not in existing_xrd_files:
-                tasks.append((name, cif_content, soap, acsf, wavelength, qmin, qmax, qstep, fwhm, snr, debug, xrd_files_dir))
-
-        if not tasks:
-            print("All XRDs have been calculated, skipping...")
-        else:
-            # Create a queue for logging and start the logging process
-            log_queue = mp.Queue()
-            listener = log_listener(log_queue, xrd_dir)
-
-            # Parallel processing of CIF files using multiprocessing
-            with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-                results_iterator = pool.imap_unordered(generate_single_xrd, tasks)
-                
-                for _ in tqdm(range(len(tasks)), total=len(data), desc="Calculating XRD...", leave=False):
-                    try:
-                        results_iterator.next(timeout = 60)
-                    except TimeoutError as e:
-                        continue
-
-            # Stop log listener and flush
-            listener.stop()
-            logging.shutdown()
-    
-        # Collect processed data
-        xrd_files = glob(os.path.join(xrd_files_dir, '*.pkl'))
-        valid_results = []
-        for f in xrd_files:
-            with open(f, 'rb') as infile:
-                d = pickle.load(infile)
-                valid_results.append(d)
-        print(f"Reduction in {dataset_name} dataset: {len(data)} --> {len(valid_results)}")
-
-        # Save
-        print(f"Saving {dataset_name} dataset with XRD data...", end="")
-        output_path = os.path.join(xrd_dir, f"{dataset_name}_dataset_xrd.pkl.gz")
-        with gzip.open(output_path, "wb") as pkl:
-            pickle.dump(valid_results, pkl)
-        del data
-        print("DONE.")
-
-    # Initialize metadata for XRD calculation
-    metadata = {
-        "xrd_parameters": {
-            "wavelength": wavelength,
-            "qmin": qmin,
-            "qmax": qmax,
-            "qstep": qstep,
-            "qgrid_len": int((qmax - qmin) / qstep),
-            "fwhm": fwhm,
-            "snr": snr
-        },
-    }
-    # Save XRD metadata to centralized file
-    save_metadata(metadata, data_dir)
-        
-    print(f"Generated XRD have been saved to {xrd_dir}")
-
-    # Free up memory
-    del tasks, valid_results
-    gc.collect()
-
-    print("Freeing up memory..")
-    print()
-
-def tokenize_single_datum(args):
-    
-    # Extract arguments
-    name, xrd_discrete, xrd_cont, cif_content, soap, acsf, debug, tokenized_files_dir = args
-    logger = logging.getLogger()
-
-    try:
-        # Convert discrete xrd to string
-        xrd_discrete_str = "\n".join([f"{x:5.4f}, {y:5.4f}" for (x,y) in zip(*xrd_discrete)])
-            
-        # Remove symmetries and header from cif_content before tokenizing
-        cif_content = remove_cif_header(cif_content)
-        cif_content_reduced = replace_data_formula_with_nonreduced_formula(cif_content)
-        cif_content_nosym = replace_symmetry_loop_with_P1(cif_content_reduced)
-
-        # Initialise Tokenizer
-        tokenizer = Tokenizer()
-        tokenize = tokenizer.tokenize_cif
-        encode = tokenizer.encode
-
-        cif_tokenized = encode(tokenize(cif_content_nosym))
-        xrd_tokenized = encode(tokenize(xrd_discrete_str))
-    
-        # Save output to pickle file
-        output_data = name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content_reduced, cif_tokenized, soap, acsf
-        output_filename = os.path.join(tokenized_files_dir, name + '.pkl')
-        temp_filename = output_filename + '.tmp' # Ensuring that only fully written files are considered when collecting
-        with open(temp_filename, 'wb') as f:
-            pickle.dump(output_data, f)
-        os.rename(temp_filename, output_filename) # File is secure, renaming
-
-    except Exception as e:
-        if debug:
-            print(f"Error processing {name}: {e}")
-        logger.exception(f"Exception in worker function with tokenization for CIF with name {name}, with error:\n {e}\n\n")
-
-    finally:
-        try:
-            del cif_tokenized
-        except NameError:
-            pass
-        try:
-            del xrd_tokenized
-        except NameError:
-            pass
-        try:
-            del tokenizer
-        except NameError:
-            pass
-        gc.collect()
-
-def tokenize_datasets(data_dir, debug_max=None, debug=False, workers=None):
-    # Find train / val / test
-    xrd_dir = os.path.join(data_dir, "xrd")
-    datasets = glob(os.path.join(xrd_dir, '*.pkl.gz'))
-    assert len(datasets) > 0, f"Cannot find any files with xrd data in {xrd_dir}"
-
-    # Make sure that there is an output
-    tokenized_dir = os.path.join(data_dir, "tokenized")
-    os.makedirs(tokenized_dir, exist_ok=True)
-        
-    print("-"*20)
-    print("TOKENIZATION")
-    print("-"*20)
-
-    for dataset_path in datasets:
-        dataset_name = dataset_path.split("/")[-1].split(".")[0].split("_")[0]
-
-        # Open pkl
-        with gzip.open(dataset_path, "rb") as f:
-            data = pickle.load(f)
-
-        # Debug max
-        data = data[:debug_max]
-        
-        # Directory for individual files
-        tokenized_files_dir = os.path.join(tokenized_dir, f"tokenized_{dataset_name}_files")
-        os.makedirs(tokenized_files_dir, exist_ok=True)
-        
-        # Check which files have already been processed
-        existing_tokenized_files = set(os.path.basename(f) for f in glob(os.path.join(tokenized_files_dir, "*.pkl")))
-
-        # Prepare arguments for parallel processing
-        tasks = []
-        for name, xrd_discrete, xrd_cont, cif_content, soap, acsf in data:
-            output_filename = name + '.pkl'
-            if output_filename not in existing_tokenized_files:
-                tasks.append((name, xrd_discrete, xrd_cont, cif_content, soap, acsf, debug, tokenized_files_dir))
-
-        if not tasks:
-            print("All CIFs have been tokenized, skipping...")
-        else:
-            # Create a queue for logging and start the logging process
-            log_queue = mp.Queue()
-            listener = log_listener(log_queue, tokenized_dir)
-
-            # Parallel processing of CIF files using multiprocessing
-            with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-                results_iterator = pool.imap_unordered(tokenize_single_datum, tasks)
-                
-                for _ in tqdm(range(len(tasks)), total=len(data), desc="Tokenizing CIFs and XRDs...", leave=False):
-                    try:
-                        results_iterator.next(timeout = 60)
-                    except TimeoutError as e:
-                        continue
-        
-            # Stop log listener and flush
-            listener.stop()
-            logging.shutdown()
-    
-        # Collect tokenized data
-        tokenized_files = glob(os.path.join(tokenized_files_dir, '*.pkl'))
-        valid_results = []
-        for f in tokenized_files:
-            with open(f, 'rb') as infile:
-                d = pickle.load(infile)
-                valid_results.append(d)
-
-        print(f"Reduction in {dataset_name} dataset: {len(data)} --> {len(valid_results)}")
-
-        # Save
-        print(f"Saving {dataset_name} tokenized data...", end="")
-        output_path = os.path.join(tokenized_dir, f"{dataset_name}_dataset_xrd_tokenized.pkl.gz")
-        with gzip.open(output_path, "wb") as pkl:
-            pickle.dump(valid_results, pkl)
-        del data
-        print("DONE.")
-
-    # Initialize metadata for tokenization
-    metadata = {
-        "vocab_size": Tokenizer().vocab_size
-    }    
-
-    # Save tokenization metadata
-    save_metadata(metadata, data_dir)
-        
-    print(f"Tokenized data have been saved to {tokenized_dir}")
-
-    # Free up memory
-    del tasks, valid_results
-    gc.collect()
-
-    print("Freeing up memory..")
-    print()
-
-def serialize(data_dir):
-    '''
-    Converts the pkl.gz dataset files to HDF5 file format.
-    
-    Args:
-        data_dir (str): Directory containing the raw CIF files.
-    
-    Returns:
-        None
-    '''
     
     # Find train / val / test
     tokenized_dir = os.path.join(data_dir, "tokenized")
@@ -1009,23 +619,28 @@ def serialize(data_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare custom CIF files and save to a tar.gz file.")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--data_dir", type=str, help="Path to the outer data directory", required=True)
+    parser.add_argument("--data-dir", type=str, help="Path to the outer data directory", required=True)
     parser.add_argument("--name", "-n", type=str, help="Name of data preparation", required=True)
-    parser.add_argument("--group_size", type=int, help="Spacegroup group size for stratification", default=10)
-    parser.add_argument("--decimal_places", type=int, help="Number of decimal places for floats in CIF files", default=4)
-    parser.add_argument("--remove_occ", help="Remove structures with occupancies less than one", action="store_true")
+    parser.add_argument("--group-size", type=int, help="Spacegroup group size for stratification", default=10)
+    parser.add_argument("--decimal-places", type=int, help="Number of decimal places for floats in CIF files", default=4)
+    parser.add_argument("--include-occ", help="Include structures with occupancies less than one", action="store_false")
 
     parser.add_argument("--preprocess", help="preprocess files", action="store_true")
     parser.add_argument("--desc", help="calculate descriptors", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--xrd", help="calculate XRD", action="store_true")  # Placeholder for future implementation
-    parser.add_argument("--tokenize", help="tokenize CIFs and XRD patterns", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--tokenize_cif", help="tokenize CIFs", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--tokenize_xrd", help="tokenize XRDs", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--serialize", help="serialize data by hdf5 convertion", action="store_true")  # Placeholder for future implementation
 
-    parser.add_argument("--debug_max", help="Debug-feature: max number of files to process", type=int, default=0)
+    parser.add_argument("--debug-max", help="Debug-feature: max number of files to process", type=int, default=0)
     parser.add_argument("--debug", help="Debug-feature: whether to print debug messages", action="store_true")
     parser.add_argument("--workers", help="Number of workers for each processing step", type=int, default=0)
+    parser.add_argument("--raw_from_gzip", help="Whether raw CIFs come packages in gzip pkl", action="store_true")
 
     args = parser.parse_args()
+
+    # Remove occ
+    args.remove_occ = not args.include_occ
 
     # workers
     if args.workers == 0:
@@ -1042,16 +657,100 @@ if __name__ == "__main__":
         args.debug_max = None
 
     if args.preprocess:
-        preprocess(args.data_dir, args.seed, args.group_size, args.decimal_places, args.remove_occ, args.debug_max, args.debug, args.workers)
+        #cif, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, pre_dir, failed_files = args
+        preprocess_dict = {
+            'spacegroup_strat_group_size': args.group_size,
+            'decimal_places': args.decimal_places,
+            'remove_occ_less_than_one': args.remove_occ,
+        }
+        run_subtasks(
+            root = args.data_dir, 
+            worker_function = preprocess_worker,
+            get_from = "../",
+            save_to = "preprocessed",
+            task_kwargs_dict = preprocess_dict,
+            announcement = "PREPROCESSING",
+            debug = True,
+            workers = args.workers,
+            from_gzip = args.raw_from_gzip,
+            debug_max = args.debug_max,
+        )
+        #preprocess(args.data_dir, args.seed, args.group_size, args.decimal_places, args.remove_occ, args.debug_max, args.debug, args.workers)
     
     if args.desc:
-        generate_descriptors(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
+        descriptor_dict = {
+            'soap': {
+                'r_cut': 6.0,
+                'n_max': 2,
+                'l_max': 5,
+                'sigma': 1.0,
+                'rbf': 'gto',
+                'compression_mode': 'crossover',
+                'periodic': True,
+                'sparse': False,
+            },
+            'acsf': {
+                'r_cut': 6.0,
+                'periodic': True,
+                'sparse': False,
+            },
+        }
+        run_subtasks(
+            root = args.data_dir, 
+            worker_function = descriptor_worker,
+            get_from = "preprocessed",
+            save_to = "descriptors",
+            add_metadata = ["species"],
+            task_kwargs_dict = descriptor_dict,
+            announcement = "DESCRIPTOR CALCULATIONS",
+            debug = True,
+            workers = args.workers,
+        )
+        #generate_descriptors(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
 
     if args.xrd:
-        generate_xrd(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
+        xrd_dict = {
+            'wavelength': 'CuKa',
+            'qmin': 0.0,
+            'qmax': 10.0,
+            'qstep': 0.01,
+            'fwhm': 0.05,
+            'snr': 100.0,
+        }
+        run_subtasks(
+            root = args.data_dir, 
+            worker_function = xrd_worker,
+            get_from = "preprocessed",
+            save_to = "xrd",
+            task_kwargs_dict = xrd_dict,
+            announcement = "XRD CALCULATIONS",
+            debug = True,
+            workers = args.workers,
+        )
+        #generate_xrd(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
 
-    if args.tokenize:
-        tokenize_datasets(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
+    if args.tokenize_cif:
+        run_subtasks(
+            root = args.data_dir, 
+            worker_function = cif_tokenizer_worker,
+            get_from = "preprocessed",
+            save_to = "cif_tokenized",
+            announcement = "TOKENIZING CIFs",
+            debug = True,
+            workers = args.workers,
+        )
+
+    if args.tokenize_xrd:
+        run_subtasks(
+            root = args.data_dir, 
+            worker_function = xrd_tokenizer_worker,
+            get_from = "xrd",
+            save_to = "xrd_tokenized",
+            announcement = "TOKENIZING XRDs",
+            debug = True,
+            workers = args.workers,
+        )
+        #tokenize_datasets(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
     
     if args.serialize:
         serialize(args.data_dir)
