@@ -8,6 +8,34 @@ sys.path.append("./")
 from time import time
 from tqdm.auto import tqdm
 
+class DeciferDataset(Dataset):
+    def __init__(self, h5_path, data_keys):
+        self.h5_file = h5py.File(h5_path, 'r')
+        self.data_keys = data_keys
+        self.data = {key: self.h5_file[key] for key in self.data_keys}
+        self.dataset_length = len(next(iter(self.data.values())))
+
+    def __len__(self):
+        return self.dataset_length
+
+    def __getitem__(self, idx):
+        data = []
+        for key in self.data_keys:
+            sequence = self.data[key][idx]
+
+            # Handle numeric data (np.ndarray)
+            if isinstance(sequence, np.ndarray):
+                dtype = torch.float32 if 'float' in str(sequence.dtype) else torch.long
+                sequence = torch.tensor(sequence, dtype=dtype)
+            elif isinstance(sequence, (bytes, str)):
+                sequence = sequence.decode('utf-8') if isinstance(sequence, bytes) else sequence
+            else:
+                raise TypeError(f"Unsupported sequence type {type(sequence)}")
+
+            data.append(sequence)
+
+        return tuple(data)
+
 class HDF5Dataset(Dataset):
     def __init__(self, h5_file_path, data_to_load, block_size, numeric_padding_value=0):
         self.h5_file = h5py.File(h5_file_path, 'r')

@@ -20,7 +20,8 @@ from .cif_utils import (
 )
 
 from .dataset import (
-    HDF5Dataset
+    HDF5Dataset,
+    DeciferDataset,
 )
 
 from .model_utils import RandomBatchSampler
