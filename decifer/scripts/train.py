@@ -18,6 +18,8 @@ import numpy as np
 from torch.utils.data import DataLoader
 from torch.utils.data import SubsetRandomSampler
 
+from torch.nn.utils.rnn import pad_sequence
+
 from dataclasses import dataclass
 from contextlib import nullcontext
 from tqdm.auto import tqdm
@@ -27,8 +29,8 @@ from omegaconf import DictConfig, OmegaConf
 from decifer import (
     Decifer,
     DeciferConfig,
+    DeciferDataset,
     Tokenizer,
-    HDF5Dataset,
     RandomBatchSampler,
 )
 
@@ -115,6 +117,9 @@ if __name__ == "__main__":
     print("Using configuration:", flush=True)
     print(OmegaConf.to_yaml(C))
     
+    # Tokenizer
+    tokenizer = Tokenizer()
+    
     # Creating output
     print(f"Creating {C.out_dir}...", flush=True)
     os.makedirs(C.out_dir, exist_ok=True)
@@ -138,26 +143,40 @@ if __name__ == "__main__":
     except:
         print(f"No metadata found, defaulting...")
 
+    def collate_fn(batch):
+        # batch is a list of tuples
+        num_fields = len(batch[0])
+        batch_data = []
+        for i in range(num_fields):
+            field_data = [item[i] for item in batch]
+            if isinstance(field_data[0], torch.Tensor):
+                # Pad the sequences to the maximum length in the batch
+                padded_seqs = pad_sequence(field_data, batch_first=True, padding_value=tokenizer.padding_id)
+                batch_data.append(padded_seqs)
+            else:
+                batch_data.append(field_data)
+        return tuple(batch_data)
+
     # Initialise datasets/loaders 
     # TODO Depending on the task, load different labels
-    train_dataset = HDF5Dataset(os.path.join(C.dataset, "hdf5/train_dataset.h5"), ["cif_tokenized", "xrd_cont_y"], block_size=C.block_size)
-    val_dataset = HDF5Dataset(os.path.join(C.dataset, "hdf5/val_dataset.h5"), ["cif_tokenized", "xrd_cont_y"], block_size=C.block_size)
-    test_dataset = HDF5Dataset(os.path.join(C.dataset, "hdf5/test_dataset.h5"), ["cif_tokenized", "xrd_cont_y"], block_size=C.block_size)
+    train_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/train.h5"), ["cif_tokenized", "xrd_cont.iq"])
+    val_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/val.h5"), ["cif_tokenized", "xrd_cont.iq"])
+    test_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/test.h5"), ["cif_tokenized", "xrd_cont.iq"])
 
     # Random batching sampler, train
     train_sampler = SubsetRandomSampler(range(len(train_dataset)))
     train_batch_sampler = RandomBatchSampler(train_sampler, batch_size=C.batch_size, drop_last=False)
-    train_dataloader = DataLoader(train_dataset, batch_sampler=train_batch_sampler, num_workers=C.num_workers_dataloader)
+    train_dataloader = DataLoader(train_dataset, batch_sampler=train_batch_sampler, num_workers=C.num_workers_dataloader, collate_fn=collate_fn)
     
     # Random batching sampler, val
     val_sampler = SubsetRandomSampler(range(len(val_dataset)))
     val_batch_sampler = RandomBatchSampler(val_sampler, batch_size=C.batch_size, drop_last=False)
-    val_dataloader = DataLoader(val_dataset, batch_sampler=val_batch_sampler, num_workers=C.num_workers_dataloader)
+    val_dataloader = DataLoader(val_dataset, batch_sampler=val_batch_sampler, num_workers=C.num_workers_dataloader, collate_fn=collate_fn)
     
     # Random batching sampler, test
     test_sampler = SubsetRandomSampler(range(len(test_dataset)))
     test_batch_sampler = RandomBatchSampler(test_sampler, batch_size=C.batch_size, drop_last=False)
-    test_dataloader = DataLoader(test_dataset, batch_sampler=test_batch_sampler, num_workers=C.num_workers_dataloader)
+    test_dataloader = DataLoader(test_dataset, batch_sampler=test_batch_sampler, num_workers=C.num_workers_dataloader, collate_fn=collate_fn)
 
     # Combine loaders for easy access
     dataloaders = {
@@ -279,7 +298,6 @@ if __name__ == "__main__":
 
     # Initialize a dictionary to keep data iterators per split
     data_iters = {}
-    tokenizer = Tokenizer()
 
     def get_batch_packed(split, conditioning=False):
         # Retrieve the dataloader and initialize the iterator
@@ -397,6 +415,7 @@ if __name__ == "__main__":
 
         # Split the batch into X and Y
         data = batch[0]
+
         X = data[:,:-1]
         Y = data[:,1:] # Shifted
 
