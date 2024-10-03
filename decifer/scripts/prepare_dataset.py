@@ -218,11 +218,13 @@ def run_subtasks(
                     worker_metadata_dict = results_iterator.next(timeout = 60)
                     if worker_metadata_dict is not None:
                         for key, values in worker_metadata_dict.items():
-                            if key in worker_metadata:
+                            if not key in worker_metadata:
+                                worker_metadata[key] = []
+                            # Extend if more than one entry else append
+                            if len(values) > 1:
                                 worker_metadata[key].extend(values)
                             else:
-                                worker_metadata[key] = []
-                                worker_metadata[key].extend(values)
+                                worker_metadata[key].append(values)
                 except TimeoutError as e:
                     continue
 
