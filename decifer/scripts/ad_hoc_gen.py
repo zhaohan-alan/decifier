@@ -120,18 +120,22 @@ def main():
     out_tokens = model.generate(prompt, max_new_tokens=args.max_new_tokens)[0].cpu().numpy()
     decode = Tokenizer().decode
     
-    cif = decode(out_tokens)
-    cif = replace_symmetry_loop_with_P1(cif)
-    spacegroup_symbol = extract_space_group_symbol(cif)
-    if spacegroup_symbol != "P 1":
-        cif = reinstate_symmetry_loop(cif, spacegroup_symbol)
+    try:
+        cif = decode(out_tokens)
+        print(cif)
+        cif = replace_symmetry_loop_with_P1(cif)
+        spacegroup_symbol = extract_space_group_symbol(cif)
+        if spacegroup_symbol != "P 1":
+            cif = reinstate_symmetry_loop(cif, spacegroup_symbol)
     
-    print(cif)
-    sensible = is_sensible(cif)
-    print("sensible", sensible)
-    if sensible:
-        eval_results = evaluate_cif(cif)
-        print('syntax', evaluate_syntax_validity(cif))
+        print(cif)
+        sensible = is_sensible(cif)
+        print("sensible", sensible)
+        if sensible:
+            eval_results = evaluate_cif(cif)
+            print('syntax', evaluate_syntax_validity(cif))
+    except:
+        raise Exception()
 
     #print(evaluate_cif(cif))
     
