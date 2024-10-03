@@ -16,7 +16,7 @@ always_save_checkpoint: True
 # whether to validate with a validation set
 validate: True
 
-dataset: 'data/crystallm/5000'
+dataset: 'data/crystallm/test'
 batch_size: 8
 block_size: 1024
 
@@ -36,4 +36,4 @@ warmup_iters: 10
 early_stopping_patience: 5
 
 condition_with_emb: False
-boundary_masking: True
+boundary_masking: False
