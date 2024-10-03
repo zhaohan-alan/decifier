@@ -31,6 +31,7 @@ from dscribe.descriptors import SOAP, MBTR, ACSF
 # Import custom modules
 from decifer import (
     HDF5Dataset,
+    DeciferDataset,
     load_model_from_checkpoint,
     Tokenizer,
     extract_prompt,
@@ -142,24 +143,24 @@ def calculate_crystal_descriptors(name, cif, species, desc_parameters, debug=Fal
         # Setup SOAP object
         soap = SOAP(
             species = species,
-            r_cut = desc_parameters['r_cut_soap'],
-            n_max = desc_parameters['n_max_soap'],
-            l_max = desc_parameters['l_max_soap'],
-            sigma = desc_parameters['sigma_soap'],
-            rbf = desc_parameters['rbf_soap'],
+            r_cut = desc_parameters['soap']['r_cut'],
+            n_max = desc_parameters['soap']['n_max'],
+            l_max = desc_parameters['soap']['l_max'],
+            sigma = desc_parameters['soap']['sigma'],
+            rbf = desc_parameters['soap']['rbf'],
             compression = {
-                'mode': desc_parameters['compression_mode_soap'],
+                'mode': desc_parameters['soap']['compression_mode'],
                 'weighting': None,
             },
-            periodic = desc_parameters['periodic'],
-            sparse = desc_parameters['sparse'],
+            periodic = desc_parameters['soap']['periodic'],
+            sparse = desc_parameters['soap']['sparse'],
         )
 
         # Setup ACSF
         acsf = ACSF(
             species = species,
-            r_cut = desc_parameters['r_cut_acsf'],
-            periodic = desc_parameters['periodic'],
+            r_cut = desc_parameters['acsf']['r_cut'],
+            periodic = desc_parameters['acsf']['periodic'],
         )
 
         # Calculate descriptors and return dict
@@ -207,15 +208,22 @@ def worker(input_queue, output_queue, eval_files_dir):
         desc_parameters = task.get(
             'descriptors_parameters',
             {
-                "r_cut_soap": 6.0,
-                "n_max_soap": 2,
-                "l_max_soap": 5,
-                "sigma_soap": 1.0,
-                "rbf_soap": 'gto',
-                "compression_mode_soap": 'crossover',
-                "r_cut_acsf": 6.0,
-                "periodic": True,
-                "sparse": False,
+                'soap': {
+                    "r_cut": 6.0,
+                    "n_max": 2,
+                    "l_max": 5,
+                    "sigma": 1.0,
+                    "rbf": 'gto',
+                    "compression_mode": 'crossover',
+                    "periodic": True,
+                    "sparse": False,
+                },
+                'acsf': {
+                    "r_cut": 6.0,
+                    "periodic": True,
+                    "sparse": False,
+                },
+                
             }
         )
         species = list(task['species'].keys())
@@ -227,6 +235,7 @@ def worker(input_queue, output_queue, eval_files_dir):
             spacegroup_symbol = extract_space_group_symbol(cif)
             if spacegroup_symbol != "P 1":
                 cif = reinstate_symmetry_loop(cif, spacegroup_symbol)
+            print(cif)
             if is_sensible(cif):
 
                 # Evaluate the CIF
@@ -247,8 +256,8 @@ def worker(input_queue, output_queue, eval_files_dir):
                 eval_result['descriptors']['acsf_sample'] = acsf_from_sample
 
                 # Add 'Dataset' and 'Model' to eval_result
-                eval_result['Dataset'] = dataset_name
-                eval_result['Model'] = model_name
+                eval_result['dataset_name'] = dataset_name
+                eval_result['model_name'] = model_name
                 eval_result['seq_len'] = len(token_ids)
                 eval_result['status'] = 'success'
 
@@ -262,6 +271,7 @@ def worker(input_queue, output_queue, eval_files_dir):
             else:
                 output_queue.put({'status': 'fail', 'index': idx, 'rep': rep})
         except Exception as e:
+            raise e
             output_queue.put({'status': 'error', 'error_msg': str(e), 'index': idx, 'rep': rep})
 
 def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, eval_files_dir, num_workers,
@@ -278,11 +288,7 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl")))
     
     # Make dataset from test
-    test_dataset = HDF5Dataset(
-        h5_test_path,
-        ["name", "cif_tokenized", "xrd_cont_x", "xrd_cont_y", "soap", "acsf"],
-        block_size=block_size,
-    )
+    test_dataset = DeciferDataset(h5_test_path, ["cif_name", "cif_tokenized", "xrd_cont.q", "xrd_cont.iq", "soap", "acsf"])
 
     # Extract metadata
     metadata_path = os.path.join(os.path.dirname(os.path.dirname(h5_test_path)), "metadata.json")
@@ -334,11 +340,11 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
                         'name': name,
                         'index': i,
                         'rep': start_rep + j,
-                        'xrd_parameters': metadata['xrd_parameters'],
+                        'xrd_parameters': metadata['xrd'],
                         'xrd_from_sample': {'q': xrd_cont_x.numpy(), 'iq': xrd_cont_y.numpy()},
                         'soap_from_sample': soap.numpy(),
                         'acsf_from_sample': acsf.numpy(),
-                        'desc_parameters': metadata['descriptors_parameters'],
+                        'desc_parameters': metadata['descriptors'],
                         'species': metadata['species'],
                         'dataset': dataset_name,
                         'model': model_name,
@@ -355,11 +361,11 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
                 'name': name,
                 'index': i,
                 'rep': 0,
-                'xrd_parameters': metadata['xrd_parameters'],
+                'xrd_parameters': metadata['xrd'],
                 'xrd_from_sample': {'q': xrd_cont_x.numpy(), 'iq': xrd_cont_y.numpy()},
                 'soap_from_sample': soap.numpy(),
                 'acsf_from_sample': acsf.numpy(),
-                'desc_parameters': metadata['descriptors_parameters'],
+                'desc_parameters': metadata['descriptors'],
                 'species': metadata['species'],
                 'dataset': dataset_name,
                 'model': "NoModel",
