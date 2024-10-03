@@ -521,102 +521,221 @@ def xrd_tokenizer_worker(args):
         logger = logging.getLogger()
         logger.exception(f"Exception in worker function with tokenization for CIF with name {cif_name}, with error:\n {e}\n\n")
 
-def serialize(data_dir):
-    '''
-    Combines the dataset files to HDF5 file format.
+def name_and_strat(path):
+    with gzip.open(path, 'rb') as f:
+        data = pickle.load(f)
+        try:
+            cif_name = data['cif_name']
+            strat_key = data['strat_key']
+            return cif_name, strat_key
+        except NameError:
+            return None
+
+def load_data_from_data_types_list(path_basename, data_types):
+    data_dict = {}
+    # Loop through data types
+    for dct in data_types:
+        file_path = os.path.join(dct['dir'], path_basename + '.pkl.gz')
+        with gzip.open(file_path, 'rb') as f:
+            data = pickle.load(f)
+            for key in dct['keys']:
+                data_dict[key] = data[key]
+    return data_dict
+
+def save_h5(h5_path, cif_names, data_types):
+
+    with h5py.File(h5_path, 'w') as h5f:
+        # Placeholder for datasets
+        dsets = {} # Stores datasets for each data type
+        current_size = 0
+
+        for idx, name in enumerate(tqdm(cif_names, desc=f'Serializing {h5_path}')):
+            # Load data for all data types
+            data_dict = load_data_from_data_types_list(name, data_types)
+
+            # Initialise datasets if processing the first file
+            if idx == 0:
+                for data_key, data_value in data_dict.items():
+                    # Determine the data type and create datasets accordinly
+                    if isinstance(data_value, np.ndarray):
+                        # For numpy arrays
+                        data_shape = data_value.shape
+                        data_dtype = data_value.dtype
+                        if len(data_shape) == 1:
+                            # For one-dimensional arrays
+                            max_shape = (None, data_shape[0])
+                            initial_shape = (0, data_shape[0])
+                        else:
+                            # For multi-dimensional arrays
+                            max_shape = (None,) + data_shape[1:]
+                            initial_shape = (0,) + data_shape[1:]
+
+                        dsets[data_key] = h5f.create_dataset(
+                            data_key,
+                            shape = initial_shape,
+                            maxshape = max_shape,
+                            chunks = True,
+                            dtype = data_dtype,
+                        )
+                    elif isinstance(data_value, str):
+                        # For strings
+                        dt = h5py.string_dtype(encoding='utf-8')
+                        dsets[data_key] = h5f.create_dataset(
+                            data_key,
+                            shape = (0,),
+                            maxshape = (None,),
+                            dtype = dt,
+                        )
+                    elif isinstance(data_value, int):
+                        # For integers
+                        dsets[data_key] = h5f.create_dataset(
+                            data_key,
+                            shape = (0,),
+                            maxshape = (None,),
+                            dtype = 'int32',
+                        )
+                    elif isinstance(data_value, float):
+                        # For floats
+                        dsets[data_key] = h5f.create_dataset(
+                            data_key,
+                            shape = (0,),
+                            maxshape = (None,),
+                            dtype = 'float32',
+                        )
+                    elif isinstance(data_value, (list, set)):
+                        # Determine if the list contains numbers or strings
+                        if all(isinstance(item, (int, float, np.number)) for item in data_value):
+                            # For lits of numbers
+                            if all(isinstance(item, int) for item in data_value):
+                                dt = h5py.vlen_dtype(np.dtype('int32'))
+                            else:
+                                dt = h5py.vlen_dtype(np.dtype('float32'))
+                            
+                            dsets[data_key] = h5f.create_dataset(
+                                data_key,
+                                shape = (0,),
+                                maxshape = (None,),
+                                dtype = dt,
+                            )
+                        elif all(isinstance(item, str) for item in data_value):
+                            # For lists of strings
+                            dt = h5py.string_dtype(encoding='utf-8')
+                            dsets[data_key] = h5f.create_dataset(
+                                data_key,
+                                shape = (0,),
+                                maxshape = (None,),
+                                dtype = dt,
+                            )
+                        else:
+                            raise TypeError(f"Unsupported data type for key '{data_key}': {type(data_value)}")
+                    elif isinstance(data_value, dict):
+                        # For dicts of arrays
+                        # A dataset for each of the arrays in the dict
+                        dt = h5py.vlen_dtype(np.dtype('float32'))
+                        for key, values in data_value.items():
+                            dsets[data_key + '.' + key] = h5f.create_dataset(
+                                data_key + '.' + key,
+                                shape = (0,),
+                                maxshape = (None,),
+                                dtype = dt,
+                            )
+                    else:
+                        raise TypeError(f"Unsupported data type for key '{data_key}': {type(data_value)}")
+
+            # Append data to datasets
+            for data_key, data_value in data_dict.items():
+                if isinstance(data_value, dict):
+                    for key, values in data_value.items():
+                        dset = dsets[data_key + '.' + key]
+                        dset.resize(current_size + 1, axis=0)
+                        dset[current_size] = values
+                else:
+                    dset = dsets[data_key]
+                    # Resize dataset to accomodate new data
+                    dset.resize(current_size + 1, axis=0)
+                    # Assign data based on type
+                    if isinstance(data_value, np.ndarray):
+                        dset[current_size] = data_value
+                    elif isinstance(data_value, (str, int, float)):
+                        dset[current_size] = data_value
+                    elif isinstance(data_value, (list, set)):
+                        if all(isinstance(item, (int, float, np.number)) for item in data_value):
+                            # Convert list to numpy array
+                            dset[current_size] = np.array(data_value)
+                        elif all(isinstance(item, str) for item in data_value):
+                            # Serialize the list to a JSON string
+                            dset[current_size] = json.dumps(list(data_value))
+                        else:
+                            raise TypeError(f"Unsupported data type for key '{data_key}': {type(data_value)}")
+                    else:
+                        raise TypeError(f"Unsupported data type for key '{data_key}': {type(data_value)}")
+            current_size += 1
+
+def serialize(root, workers, seed):
+
+    # Locate available data TODO make this automatic based on folder names etc.
+    pre_dir = os.path.join(root, "preprocessed")
+    pre_paths = glob(os.path.join(pre_dir, "*.pkl.gz"))
+    assert len(pre_paths) > 0, f"No preprocessing files found in {pre_dir}"
+    dataset_size = len(pre_paths)
     
-    Args:
-        data_dir (str): Directory containing the dataset files.
+    # Make output folder
+    ser_dir = os.path.join(root, "serialized")
+    os.makedirs(ser_dir, exist_ok=True)
     
-    Returns:
-        None
-    '''
+    # Retrieve all cif names and stratification keys
+    with Pool(processes=workers) as pool:
+        results = list(tqdm(pool.imap(name_and_strat, pre_paths), total=len(pre_paths), desc="Retrieving names and stratification keys", leave=False))
+
+    # Seperate cif neams and stratification keys
+    cif_names = [item[0] for item in results]
+    strat_keys = [item[1] for item in results]
+    
     # Create data splits
-    #train_size = int(0.8 * len(cif_contents))
-    #val_size = int(0.1 * len(cif_contents))
-    #test_size = len(cif_contents) - train_size - val_size
-    #print("Train size:", train_size)
-    #print("Val size:", val_size)
-    #print("Test size:", test_size)
+    train_size = int(0.8 * dataset_size)
+    val_size = int(0.1 * dataset_size)
+    test_size = dataset_size - train_size - val_size
 
-    # Split data using stratification
-    #train_data, test_data, train_names, test_names = train_test_split(
-    #    cif_contents, names, test_size=test_size, stratify=strat_keys, random_state=seed
-    #)
-    #train_data, val_data, train_names, val_names = train_test_split(
-    #    train_data, train_names, test_size=val_size, stratify=[strat_keys[cif_contents.index(f)] for f in train_data], random_state=seed
-    #)
+    print("Train size:", train_size)
+    print("Val size:", val_size)
+    print("Test size:", test_size)
 
-    #train = [(n, d) for (n, d) in zip(train_names, train_data)]
-    #val = [(n, d) for (n, d) in zip(val_names, val_data)]
-    #test = [(n, d) for (n, d) in zip(test_names, test_data)]
+    cif_names_temp, cif_names_test, strat_keys_temp, _ = train_test_split(
+        cif_names, strat_keys, test_size = test_size, stratify = strat_keys, random_state = seed,
+    )
+    cif_names_train, cif_names_val = train_test_split(
+        cif_names_temp, test_size = test_size, stratify = strat_keys_temp, random_state = seed,
+    )
 
-    # Save the train/val/test data splits
-    #for data, prefix in zip([train, val, test], ["train", "val", "test"]):
-    #    print(f"Saving {prefix} dataset...", end="")
-    #    with gzip.open(os.path.join(pre_dir, f"{prefix}_dataset.pkl.gz"), "wb") as pkl:
-    #        pickle.dump(data, pkl)
-    #    del data
-    #    print("DONE.")
+    # Data types
+    data_types = []
 
-    # Centralized metadata for preprocessing
-    #metadata = {
-        #"train_size": train_size,
-        #"val_size": val_size,
-        #"test_size": test_size,
-
-    #pre_dir = os.path.join()
-    #dataset_size = len(os.listdir()
-
-    #try:
+    # Preprocessed
+    data_types.append({'dir': pre_dir, 'keys': ['cif_name', 'cif_string', 'strat_key', 'species', 'spacegroup']})
     
-    # Find train / val / test
-    tokenized_dir = os.path.join(data_dir, "tokenized")
-    datasets = glob(os.path.join(tokenized_dir, '*.pkl.gz'))
-    assert len(datasets) > 0, f"Cannot find any tokenized data in {tokenized_dir}"
+    desc_dir = os.path.join(root, "descriptors")
+    desc_paths = glob(os.path.join(desc_dir, "*.pkl.gz"))
+    if len(desc_paths) > 0:
+        data_types.append({'dir': desc_dir, 'keys': ['soap', 'acsf']})
 
-    # Make sure that there is an output
-    hdf5_dir = os.path.join(data_dir, "hdf5")
-    os.makedirs(hdf5_dir, exist_ok=True)
+    xrd_dir = os.path.join(root, "xrd")
+    xrd_paths = glob(os.path.join(xrd_dir, "*.pkl.gz"))
+    if len(xrd_paths) > 0:
+        data_types.append({'dir': xrd_dir, 'keys': ['xrd_disc', 'xrd_cont']})
 
-    print("-"*20)
-    print("SERIALIZATION")
-    print("-"*20)
-    for dataset_path in datasets:
-        dataset_name = dataset_path.split("/")[-1].split(".")[0].split("_")[0]
+    cif_token_dir = os.path.join(root, "cif_tokenized")
+    cif_token_paths = glob(os.path.join(cif_token_dir, "*.pkl.gz"))
+    if len(cif_token_paths) > 0:
+        data_types.append({'dir': cif_token_dir, 'keys': ['cif_tokenized']})
 
-        with gzip.open(dataset_path, 'rb') as pkl_file:
-            data = pickle.load(pkl_file)
+    xrd_token_dir = os.path.join(root, "xrd_tokenized")
+    xrd_token_paths = glob(os.path.join(xrd_token_dir, "*.pkl.gz"))
+    if len(xrd_token_paths) > 0:
+        data_types.append({'dir': xrd_token_dir, 'keys': ['xrd_tokenized']})
 
-        # Convert to dictionary
-        data_dict = {"name": [], "xrd_discrete_x": [], "xrd_discrete_y": [], "xrd_cont_x": [], "xrd_cont_y": [], "xrd_tokenized": [], "cif_content": [], "cif_tokenized": [],
-                     "soap": [], "acsf": []}
-        for (name, xrd_discrete, xrd_cont, xrd_tokenized, cif_content, cif_tokenized, soap, acsf) in data:
-            data_dict['name'].append(name)
-            data_dict['xrd_discrete_x'].append(xrd_discrete[0])
-            data_dict['xrd_discrete_y'].append(xrd_discrete[1])
-            data_dict['xrd_cont_x'].append(xrd_cont[0])
-            data_dict['xrd_cont_y'].append(xrd_cont[1])
-            data_dict['xrd_tokenized'].append(np.array(xrd_tokenized))
-            data_dict['cif_content'].append(cif_content)
-            data_dict['cif_tokenized'].append(np.array(cif_tokenized))
-            data_dict['soap'].append(soap)
-            data_dict['acsf'].append(acsf)
-
-        with h5py.File(os.path.join(hdf5_dir, f"{dataset_name}_dataset.h5"), 'w') as hdf5_file:
-            hdf5_file.create_dataset('name', data=data_dict['name'])
-            hdf5_file.create_dataset('xrd_discrete_x', data=data_dict['xrd_discrete_x'], dtype=h5py.special_dtype(vlen=np.dtype('float32')))
-            hdf5_file.create_dataset('xrd_discrete_y', data=data_dict['xrd_discrete_y'], dtype=h5py.special_dtype(vlen=np.dtype('float32')))
-            hdf5_file.create_dataset('xrd_cont_x', data=data_dict['xrd_cont_x'])#, dtype=h5py.special_dtype(vlen=np.dtype('float32')))
-            hdf5_file.create_dataset('xrd_cont_y', data=data_dict['xrd_cont_y'])#, dtype=h5py.special_dtype(vlen=np.dtype('float32')))
-            hdf5_file.create_dataset('xrd_tokenized', data=data_dict['xrd_tokenized'], dtype=h5py.special_dtype(vlen=np.dtype('int32')))
-            hdf5_file.create_dataset('cif_content', data=data_dict['cif_content'])
-            hdf5_file.create_dataset('cif_tokenized', data=data_dict['cif_tokenized'], dtype=h5py.special_dtype(vlen=np.dtype('int32')))
-            hdf5_file.create_dataset('soap', data=data_dict['soap'])#, dtype=np.dtype('float16'))
-            hdf5_file.create_dataset('acsf', data=data_dict['acsf'])#, dtype=np.dtype('float16'))
-
-    print(f"Successfully created HDF5 files at {hdf5_dir}.")
-    print()
+    for cif_names, split_name in zip([cif_names_train, cif_names_val, cif_names_test], ['train', 'val', 'test']):
+        h5_path = os.path.join(ser_dir, f'{split_name}.h5')
+        save_h5(h5_path, cif_names, data_types)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare custom CIF files and save to a tar.gz file.")
@@ -659,7 +778,6 @@ if __name__ == "__main__":
         args.debug_max = None
 
     if args.preprocess:
-        #cif, spacegroup_group_size, decimal_places, remove_occ_less_than_one, debug, pre_dir, failed_files = args
         preprocess_dict = {
             'spacegroup_strat_group_size': args.group_size,
             'decimal_places': args.decimal_places,
@@ -677,7 +795,6 @@ if __name__ == "__main__":
             from_gzip = args.raw_from_gzip,
             debug_max = args.debug_max,
         )
-        #preprocess(args.data_dir, args.seed, args.group_size, args.decimal_places, args.remove_occ, args.debug_max, args.debug, args.workers)
     
     if args.desc:
         descriptor_dict = {
@@ -708,7 +825,6 @@ if __name__ == "__main__":
             debug = True,
             workers = args.workers,
         )
-        #generate_descriptors(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
 
     if args.xrd:
         xrd_dict = {
@@ -729,7 +845,6 @@ if __name__ == "__main__":
             debug = True,
             workers = args.workers,
         )
-        #generate_xrd(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
 
     if args.tokenize_cif:
         run_subtasks(
@@ -752,10 +867,9 @@ if __name__ == "__main__":
             debug = True,
             workers = args.workers,
         )
-        #tokenize_datasets(args.data_dir, debug_max=args.debug_max, debug=args.debug, workers=args.workers)
     
     if args.serialize:
-        serialize(args.data_dir)
+        serialize(args.data_dir, args.workers, args.seed)
 
     # Store all arguments passed to the main function in centralized metadata
     metadata = {
