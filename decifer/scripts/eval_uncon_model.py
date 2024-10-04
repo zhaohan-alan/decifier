@@ -420,6 +420,25 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
 
     return evaluations
 
+def collect_eval(eval_files_dir):
+
+    # Collect evaluated data from pickles
+    eval_files = glob(os.path.join(eval_files_dir, '*.pkl'))
+    for f in eval_files:
+        with open(f, 'rb') as infile:
+            eval_result = pickle.load(infile)
+            evaluations.append(eval_result)
+    
+    print(f"Processed {n_sent} samples in {(time() - start):.3f} seconds.") 
+    print(f"Total number of successful evaluations: {len(evaluations)}.")
+
+    # Convert evaluations to DataFrame
+    df = pd.json_normalize(evaluations)
+
+    # Write to Parquet file
+    out_file_path = os.path.join(out_folder_path, dataset_name + '.eval')
+    df.to_parquet(out_file_path, compression='snappy')
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process and evaluate CIF files using multiprocessing.')
 
@@ -470,6 +489,8 @@ if __name__ == '__main__':
     parser.add_argument('--block-size', type=int, default=10000, 
                         help='Block size of the dataset class')
 
+    parser.add_argument('--collect', action='store_true', 
+                        help='Just collect eval files and combine')
     # Set defaults for add_composition and add_spacegroup
     parser.set_defaults(add_composition=False, add_spacegroup=False)
 
@@ -518,32 +539,36 @@ if __name__ == '__main__':
     eval_files_dir = os.path.join(out_folder, "eval_files", args.dataset_name)
     os.makedirs(eval_files_dir, exist_ok=True)
 
-    # Start worker processes
-    num_workers = args.num_workers
-    processes = [mp.Process(target=worker, args=(input_queue, output_queue, eval_files_dir)) for _ in range(num_workers)]
-    for p in processes:
-        p.start()
+    # Collect
+    if args.collect:
+        collect_eval(eval_files_dir)
+    else:
+        # Start worker processes
+        num_workers = args.num_workers
+        processes = [mp.Process(target=worker, args=(input_queue, output_queue, eval_files_dir)) for _ in range(num_workers)]
+        for p in processes:
+            p.start()
 
-    # Call process_dataset with new arguments
-    evaluations = process_dataset(
-        h5_test_path,
-        block_size,
-        model,
-        input_queue,
-        output_queue,
-        eval_files_dir,
-        num_workers,
-        out_folder_path=out_folder,
-        debug_max=args.debug_max,
-        debug=args.debug,
-        add_composition=args.add_composition,
-        add_spacegroup=args.add_spacegroup,
-        max_new_tokens=args.max_new_tokens,
-        dataset_name=args.dataset_name,
-        model_name=args.model_name,
-        num_reps=args.num_reps,
-    )
+        # Call process_dataset with new arguments
+        evaluations = process_dataset(
+            h5_test_path,
+            block_size,
+            model,
+            input_queue,
+            output_queue,
+            eval_files_dir,
+            num_workers,
+            out_folder_path=out_folder,
+            debug_max=args.debug_max,
+            debug=args.debug,
+            add_composition=args.add_composition,
+            add_spacegroup=args.add_spacegroup,
+            max_new_tokens=args.max_new_tokens,
+            dataset_name=args.dataset_name,
+            model_name=args.model_name,
+            num_reps=args.num_reps,
+        )
 
-    # Join worker processes
-    for p in processes:
-        p.join()
+        # Join worker processes
+        for p in processes:
+            p.join()
