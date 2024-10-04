@@ -1,12 +1,12 @@
-out_dir: 'cross-contamination/no_boundarymasking'
-eval_interval: 10  # how often to evaluate against the validation set
+out_dir: 'cross-contamination/deciferdataset_experiment/no_boundarymasking'
+eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200
 eval_iters_val: 200
 log_interval: 1  # how often to print to the console (1 = every iteration)
 init_from: 'scratch'
 
 device: 'cuda'
-compile: False
+compile: True
 
 dtype: 'float16'
 
@@ -18,7 +18,7 @@ validate: True
 
 dataset: 'data/crystallm/500k'
 batch_size: 32
-block_size: 1024
+block_size: 2048
 
 n_layer: 8
 n_head: 8
@@ -33,7 +33,7 @@ beta2: 0.99
 
 warmup_iters: 10
 
-early_stopping_patience: 5
+early_stopping_patience: 10
 
 condition_with_emb: False
 boundary_masking: False
