@@ -420,16 +420,16 @@ def process_dataset(h5_test_path, block_size, model, input_queue, output_queue, 
 
     return evaluations
 
-def collect_eval(eval_files_dir):
+def collect_eval(eval_files_dir, dataset_name, out_folder_path):
 
     # Collect evaluated data from pickles
+    evaluations = []
     eval_files = glob(os.path.join(eval_files_dir, '*.pkl'))
     for f in eval_files:
         with open(f, 'rb') as infile:
             eval_result = pickle.load(infile)
             evaluations.append(eval_result)
     
-    print(f"Processed {n_sent} samples in {(time() - start):.3f} seconds.") 
     print(f"Total number of successful evaluations: {len(evaluations)}.")
 
     # Convert evaluations to DataFrame
@@ -438,6 +438,8 @@ def collect_eval(eval_files_dir):
     # Write to Parquet file
     out_file_path = os.path.join(out_folder_path, dataset_name + '.eval')
     df.to_parquet(out_file_path, compression='snappy')
+
+    print(f"Saved eval file.")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process and evaluate CIF files using multiprocessing.')
@@ -541,7 +543,7 @@ if __name__ == '__main__':
 
     # Collect
     if args.collect:
-        collect_eval(eval_files_dir)
+        collect_eval(eval_files_dir, args.dataset_name, out_folder)
     else:
         # Start worker processes
         num_workers = args.num_workers
