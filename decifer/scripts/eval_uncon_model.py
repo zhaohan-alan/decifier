@@ -235,7 +235,6 @@ def worker(input_queue, output_queue, eval_files_dir):
             spacegroup_symbol = extract_space_group_symbol(cif)
             if spacegroup_symbol != "P 1":
                 cif = reinstate_symmetry_loop(cif, spacegroup_symbol)
-            print(cif)
             if is_sensible(cif):
 
                 # Evaluate the CIF
