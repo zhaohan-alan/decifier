@@ -156,12 +156,13 @@ def run_subtasks(
     pickles = glob(os.path.join(from_dir, '*.pkl.gz'))
     if not from_gzip:
         assert len(pickles) > 0, f"Cannot locate any files in {from_dir}"
-        paths = pickles[:debug_max]
+        paths = sorted(pickles)[:debug_max]
         assert len(paths) > 1, f"Flagging suspicious behaviour, only 1 or less CIFs present in {from_dir}: {paths}"
     else:
         assert len(pickles) == 1, f"from_gzip flag is raised, but more than one gzip file found in directory"
         with gzip.open(pickles[0], 'rb') as f:
             paths = pickle.load(f)[:debug_max]
+            paths = sorted(paths, key=lambda x: x[0])
 
     # Make output folder
     to_dir = os.path.join(root, save_to)
@@ -191,17 +192,18 @@ def run_subtasks(
             name = os.path.basename(path)
         else:
             name, _ = path
-        if name in existing_files:
+        if name + '.pkl.gz' in existing_files:
             pbar.update(1)
             continue
-        tasks.append(
-            (path, task_kwargs_dict, debug, to_dir)
-        )
-        pbar.update(1)
+        else:
+            tasks.append(
+                (path, task_kwargs_dict, debug, to_dir)
+            )
+            pbar.update(1)
     pbar.close()
 
     if not tasks:
-        print("All task have already been executed for {save_to}, skipping...", end='\n')
+        print(f"All task have already been executed for {save_to}, skipping...", end='\n')
     else:
         # Keep track of optional worker metadata
         worker_metadata = {}
@@ -215,23 +217,9 @@ def run_subtasks(
             
             for _ in tqdm(range(len(tasks)), total=len(tasks), desc="Executing tasks...", leave=False):
                 try:
-                    worker_metadata_dict = results_iterator.next(timeout = 60)
-                    if worker_metadata_dict is not None:
-                        for key, values in worker_metadata_dict.items():
-                            if not key in worker_metadata:
-                                worker_metadata[key] = []
-                            # Extend if more than one entry else append
-                            if len(values) > 1:
-                                worker_metadata[key].extend(values)
-                            else:
-                                worker_metadata[key].append(values)
+                    results_iterator.next(timeout = 60)
                 except TimeoutError as e:
                     continue
-
-        # Add worker metadata
-        for key in worker_metadata.keys():
-            worker_metadata[key] = Counter(worker_metadata[key])
-        save_metadata(worker_metadata, root)
 
         # Stop log listener and flush
         listener.stop()
@@ -294,7 +282,7 @@ def preprocess_worker(args):
 
         # Extract species, spacegroup and composition of crystal structure
         composition = Composition(extract_formula_nonreduced(cif_string)).as_dict()
-        species = set(composition.keys())
+        species = list(set(composition.keys()))
         spacegroup = extract_space_group_symbol(cif_string)
 
         # Save output to pickle file
@@ -309,8 +297,6 @@ def preprocess_worker(args):
         output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
         safe_pkl_gz(output_dict, output_path)
 
-        return {'species': species, 'spacegroups': spacegroup}
-
     except Exception as e:
         if debug:
             print(f"Error processing {cif_name}: {e}")
@@ -320,8 +306,6 @@ def preprocess_worker(args):
         
         # Append the file name the failed_files manager list
         #failed_files.append(cif_name)
-
-        return None
 
 def descriptor_worker(args):
 
@@ -335,7 +319,7 @@ def descriptor_worker(args):
     cif_string = data['cif_string']
     
     # Get species
-    species = list(task_dict['species'].keys())
+    species = task_dict['species']
 
     try:
         # Load structure and parse to ASE
@@ -379,7 +363,6 @@ def descriptor_worker(args):
         logger = logging.getLogger()
         logger.exception(f"Exception in worker function calculating descriptors for CIF {cif_name}, with error:\n {e}\n\n")
     
-
 def xrd_worker(args):
 
     # Extract arguments
@@ -737,6 +720,32 @@ def serialize(root, workers, seed):
         h5_path = os.path.join(ser_dir, f'{split_name}.h5')
         save_h5(h5_path, cif_names, data_types)
 
+def retrieve_worker(args):
+    
+    # Extract args
+    path, key = args
+
+    # Open pkl and extract
+    with gzip.open(path, "rb") as f:
+        data = pickle.load(f)[key]
+
+    return data
+
+def collect_data(root, get_from, key, workers=cpu_count() - 1):
+
+    # Find paths
+    paths = glob(os.path.join(root, get_from, "*.pkl.gz"))
+    args = [(path, key) for path in paths] 
+
+    # Define output
+    output = []
+
+    # Parallel process retrieving the results
+    with Pool(processes=workers) as pool:
+        key_data = list(tqdm(pool.imap(retrieve_worker, args), total=len(paths), desc=f"Retrieving {key} from {get_from}...", leave=False))
+        
+    return key_data
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare custom CIF files and save to a tar.gz file.")
     parser.add_argument("--seed", type=int, default=42)
@@ -757,6 +766,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug", help="Debug-feature: whether to print debug messages", action="store_true")
     parser.add_argument("--workers", help="Number of workers for each processing step", type=int, default=0)
     parser.add_argument("--raw_from_gzip", help="Whether raw CIFs come packages in gzip pkl", action="store_true")
+    parser.add_argument("--save-species-to-metadata", help="Extraordinary save of species to metadata", action="store_true")
 
     args = parser.parse_args()
 
@@ -795,6 +805,25 @@ if __name__ == "__main__":
             from_gzip = args.raw_from_gzip,
             debug_max = args.debug_max,
         )
+        
+        # Save species to metadata
+        species = collect_data(
+            root = args.data_dir,
+            get_from = "preprocessed",
+            key = "species",
+        ) # Returns a list of lists
+        species = {'species': list(set([item for sublist in species for item in sublist]))}
+        save_metadata(species, args.data_dir)
+
+    if args.save_species_to_metadata:
+        # Save species to metadata
+        species = collect_data(
+            root = args.data_dir,
+            get_from = "preprocessed",
+            key = "species",
+        ) # Returns a list of lists
+        species = {'species': list(set([item for sublist in species for item in sublist]))}
+        save_metadata(species, args.data_dir)
     
     if args.desc:
         descriptor_dict = {
