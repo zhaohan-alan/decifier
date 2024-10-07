@@ -22,7 +22,7 @@ def process_and_save_plots_and_stats(parquet_file_path, upper_limit, bins):
     df = pd.read_parquet(parquet_file_path)
 
     # Handle infinite values and convert them to NaN
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    #df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     # Rename cell parameter columns if necessary
     cell_param_cols = [col for col in df.columns if col.startswith('cell_params.')]
@@ -71,7 +71,7 @@ def process_and_save_plots_and_stats(parquet_file_path, upper_limit, bins):
 def generate_statistics_table(df, output_folder):
     # Columns required for evaluation
     required_columns = [
-        'Dataset', 'Model', 'cif',
+        'dataset_name', 'model_name', 'cif_name',
         'syntax_validity.formula_consistency',
         'syntax_validity.space_group_consistency',
         'syntax_validity.atom_site_multiplicity',
@@ -91,7 +91,7 @@ def generate_statistics_table(df, output_folder):
                       'syntax_validity.bond_length_acceptability']].all(axis=1)
 
     # Group by Dataset and Model to compute statistics
-    grouped = df.groupby(['Dataset', 'Model'])
+    grouped = df.groupby(['dataset_name', 'model_name'])
 
     # Initialize a list to store the results
     results = []
