@@ -30,7 +30,6 @@ from dscribe.descriptors import SOAP, MBTR, ACSF
 
 # Import custom modules
 from decifer import (
-    HDF5Dataset,
     DeciferDataset,
     load_model_from_checkpoint,
     Tokenizer,
@@ -45,11 +44,29 @@ from decifer import (
     extract_volume,
 )
 
-def evaluate_cif(cif):
-    eval_dict = {
-        'cif': cif,
-        'syntax_validity': None,
-        'spacegroup': None,
+def get_statistics(cif_string):
+    
+    # Helper function to safely extract values and set booleans
+    def safe_extract(extract_func, *args, set_boolean=False):
+        try:
+            result = extract_func(*args)
+            if set_boolean:
+                return result, True
+            return result
+        except Exception:
+            if set_boolean:
+                return None, False
+            return None
+    
+    # Define standard output
+    stat_dict = {
+        'cif_string': cif_string,
+        'validity': {
+            'formula': False,
+            'site_multiplicity': False,
+            'bond_length': False,
+            'spacegroup': False,
+        },
         'cell_params': {
             'a': None,
             'b': None,
@@ -60,32 +77,39 @@ def evaluate_cif(cif):
             'implied_vol': None,
             'gen_vol': None,
         },
+        'spacegroup': None,
+        'composition': None,
+        'species': None,
     }
-    try:
-        eval_dict['syntax_validity'] = evaluate_syntax_validity(cif)
-        eval_dict['spacegroup'] = extract_space_group_symbol(cif)
-        
-        a = extract_numeric_property(cif, "_cell_length_a")
-        b = extract_numeric_property(cif, "_cell_length_b")
-        c = extract_numeric_property(cif, "_cell_length_c")
-        alpha = extract_numeric_property(cif, "_cell_angle_alpha")
-        beta = extract_numeric_property(cif, "_cell_angle_beta")
-        gamma = extract_numeric_property(cif, "_cell_angle_gamma")
-        
-        eval_dict['cell_params'].update({
-            'a': a,
-            'b': b,
-            'c': c,
-            'alpha': alpha,
-            'beta': beta,
-            'gamma': gamma,
-        })
-        eval_dict['cell_params']['implied_vol'] = get_unit_cell_volume(a, b, c, alpha, beta, gamma)
-        eval_dict['cell_params']['gen_vol'] = extract_volume(cif)
-        
-    except Exception:
-        return eval_dict
-    return eval_dict
+    
+    # Extract boolean values for validity
+    stat_dict['validity']['formula'], _ = safe_extract(evaluate_formula_validity, cif_string, set_boolean=True)
+    stat_dict['validity']['site_multiplicity'], _ = safe_extract(evaluate_site_multiplicity, cif_string, set_boolean=True)
+    stat_dict['validity']['bond_length'], _ = safe_extract(evaluate_bond_length, cif_string, set_boolean=True)
+    stat_dict['validity']['spacegroup'], stat_dict['spacegroup'] = safe_extract(extract_space_group_symbol, cif_string, set_boolean=True)
+    
+    # Extract numeric properties safely
+    a = safe_extract(extract_numeric_property, cif_string, "_cell_length_a")
+    b = safe_extract(extract_numeric_property, cif_string, "_cell_length_b")
+    c = safe_extract(extract_numeric_property, cif_string, "_cell_length_c")
+    alpha = safe_extract(extract_numeric_property, cif_string, "_cell_angle_alpha")
+    beta = safe_extract(extract_numeric_property, cif_string, "_cell_angle_beta")
+    gamma = safe_extract(extract_numeric_property, cif_string, "_cell_angle_gamma")
+    implied_vol = safe_extract(get_unit_cell_volume, a, b, c, alpha, beta, gamma)
+    gen_vol = safe_extract(extract_volume, cif_string)
+    
+    stat_dict['cell_params'].update({
+        'a': a,
+        'b': b,
+        'c': c,
+        'alpha': alpha,
+        'beta': beta,
+        'gamma': gamma,
+        'implied_vol': implied_vol,
+        'gen_vol': gen_vol
+    })
+    
+    return stat_dict
 
 def calculate_xrd(name, cif, xrd_parameters, debug=False):
     try:
