@@ -65,6 +65,12 @@ def get_atomic_props_block(composition, oxi=False):
 
     return str(CifBlock(data, loops, "")).replace("data_\n", "")
 
+def extract_species(cif_str):
+    return list(set(Composition(extract_formula_nonreduced(cif_str)).as_dict().keys()))
+
+def extract_composition(cif_str):
+    return Composition(extract_formula_nonreduced(cif_string)).as_dict()
+
 def add_atomic_props_block(cif_str, oxi=False):
     comp = Composition(extract_formula_nonreduced(cif_str))
 

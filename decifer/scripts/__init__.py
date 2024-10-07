@@ -17,6 +17,8 @@ from .cif_utils import (
     extract_volume,
     get_atomic_props_block,
     add_atomic_props_block,
+    extract_species,
+    extract_composition,
 )
 
 from .dataset import (
