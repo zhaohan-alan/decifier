@@ -192,7 +192,8 @@ def run_subtasks(
             name = os.path.basename(path)
         else:
             name, _ = path
-        if name + '.pkl.gz' in existing_files:
+            name = name + '.pkl.gz'
+        if name in existing_files:
             pbar.update(1)
             continue
         else:
@@ -638,6 +639,7 @@ def save_h5(h5_path, cif_names, data_types):
                     dset.resize(current_size + 1, axis=0)
                     # Assign data based on type
                     if isinstance(data_value, np.ndarray):
+                        print(data_value)
                         dset[current_size] = data_value
                     elif isinstance(data_value, (str, int, float)):
                         dset[current_size] = data_value
