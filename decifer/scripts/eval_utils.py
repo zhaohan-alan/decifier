@@ -82,7 +82,6 @@ def bond_length_reasonableness_score(cif_str, tolerance=0.32, h_factor=2.5):
 
     return normalized_score
 
-
 def is_space_group_consistent(cif_str):
     structure = Structure.from_str(cif_str, fmt="cif")
     try:
@@ -105,7 +104,6 @@ def is_space_group_consistent(cif_str):
 
     return is_match
 
-
 def is_formula_consistent(cif_str):
     try:
         parser = CifParser.from_string(cif_str)
@@ -119,7 +117,6 @@ def is_formula_consistent(cif_str):
     formula_structural = Composition(cif_data[list(cif_data.keys())[0]]["_chemical_formula_structural"])
 
     return formula_data.reduced_formula == formula_sum.reduced_formula == formula_structural.reduced_formula
-
 
 def is_atom_site_multiplicity_consistent(cif_str):
     # Parse the CIF string
@@ -187,23 +184,23 @@ def is_valid(cif_str, bond_length_acceptability_cutoff=1.0):
     return True
 
 def evaluate_syntax_validity(cif_str, bond_length_acceptability_cutoff=1.0):
-    validity = {
-        "formula_consistency": False,
-        "atom_site_multiplicity": False, 
-        "bond_length_acceptability": False, 
-        "space_group_consistency": False,
+    validity_dict = {
+        "formula": False,
+        "site_multiplicity": False, 
+        "bond_length": False, 
+        "spacegroup": False,
     }
     if is_formula_consistent(cif_str):
-        validity["formula_consistency"] = True
+        validity["formula"] = True
     if is_atom_site_multiplicity_consistent(cif_str):
-        validity["atom_site_multiplicity"] = True
+        validity["site_multiplicity"] = True
     bond_length_score = bond_length_reasonableness_score(cif_str)
     if bond_length_score >= bond_length_acceptability_cutoff:
-        validity["bond_length_acceptability"] = True
+        validity["bond_length"] = True
     if is_space_group_consistent(cif_str):
-        validity["space_group_consistency"] = True
+        validity["spacegroup"] = True
     
-    return validity
+    return validity_dict
 
 def space_group_symbol_to_number(symbol):
     # Dictionary mapping space group symbols to their corresponding numbers
@@ -256,14 +253,16 @@ def get_metrics(ckpt_path):
     fname = '/'.join(ckpt_path.split('/')[:-1])
     return metrics, fname
 
-def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, offset = 0.02, plot_metrics=True):
-    fig, ax_loss = plt.subplots(figsize=(10,5), dpi=150)
+def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=None, ymax=None, offset = 0.02, plot_metrics=True, figsize=(10,5)):
+    fig, ax_loss = plt.subplots(figsize=figsize, dpi=150)
     text_positions = []
 
     ax_loss.set(xlabel='Epoch', ylabel='CE-Loss')
 
     if xmin is not None or xmax is not None:
         ax_loss.set_xlim(xmin, xmax)
+    if ymin is not None or ymax is not None:
+        ax_loss.set_ylim(ymin, ymax)
     if ylog:
         ax_loss.set_yscale('log')
     if xlog:
@@ -310,7 +309,6 @@ def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, offset 
     ax_loss.legend(fontsize=8)
     fig.tight_layout()
     plt.show()
-    
 
 def extract_prompt(sequence, device, add_composition=True, add_spacegroup=False):
     
@@ -383,7 +381,6 @@ def extract_prompt_batch(sequences, device, add_composition=True, add_spacegroup
         padded_prompts[i, -prompt_len:] = prompt
 
     return padded_prompts, prompt_lengths
-
 
 
 # Function to load model from a checkpoint
