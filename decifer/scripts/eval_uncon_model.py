@@ -612,7 +612,7 @@ def main():
     parser = argparse.ArgumentParser(description='Process and evaluate CIF files using multiprocessing.')
 
     # Argument parsing for required and optional arguments
-    parser.add_argument('--config-path', type=str, required=True, help='Path to the configuration YAML file.')
+    parser.add_argument('--model-ckpt', type=str, help='Path to the model ckpt file.')
     parser.add_argument('--root', type=str, default='./', help='Root directory path.')
     parser.add_argument('--num-workers', type=int, default=mp.cpu_count() - 1, help='Number of worker processes.')
     parser.add_argument('--dataset-path', type=str, required=True, help='Path to the dataset HDF5 file.')
@@ -646,25 +646,26 @@ def main():
     args = parser.parse_args()
 
     # Load configuration from YAML file
-    with open(args.config_path, "r") as f:
-        yaml_config = yaml.safe_load(f)
-    config = OmegaConf.create(yaml_config)
-
-    # Set paths and initialize model/device
-    h5_test_path = args.dataset_path
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    # Load model from checkpoint, unless in no-model mode
-    ckpt_path = os.path.join(args.root, config["out_dir"], 'ckpt.pt')
-    model = None
-    if not args.no_model and os.path.exists(ckpt_path):
-        model = load_model_from_checkpoint(ckpt_path, device)
-        model.eval()
-    elif not args.no_model:
-        print(f"Checkpoint not found at {ckpt_path}")
-        sys.exit(1)
+    #with open(args.config_path, "r") as f:
+    #    yaml_config = yaml.safe_load(f)
+    #config = OmegaConf.create(yaml_config)
     
+    # Load model from checkpoint, unless in no-model mode
+    #ckpt_path = os.path.join(args.root, config["out_dir"], 'ckpt.pt')
+    ckpt_path = args.model_ckpt
+    if args.no_model:
+        model = None
+    else:
+        if os.path.exists(ckpt_path):
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model = load_model_from_checkpoint(ckpt_path, device)
+            model.eval()
+        else:
+            print(f"Checkpoint not found at {ckpt_path}")
+            sys.exit(1)
+
     # Extract metadata and set default values for descriptor parameters
+    h5_test_path = args.dataset_path
     metadata_path = os.path.join(os.path.dirname(os.path.dirname(h5_test_path)), "metadata.json")
     with open(metadata_path, "r") as f:
         metadata = json.load(f)
