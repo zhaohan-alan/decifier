@@ -378,6 +378,7 @@ def plot_histograms(stat_dict, output_dir):
     axes[2].set(title='Sequence Length', xlabel='Seq Len')
 
     for i, param in enumerate(cell_params):
+        print(len(all_cell_params[param]))
         sns.histplot(
             x=all_cell_params[param],
             bins=cell_params_bins[param],
@@ -520,8 +521,9 @@ def main():
         for param in cell_params:
             stat_dict[dataset_name]['cell_params'][param] = df.loc[idxs, f'cell_params.{param}'].tolist()
         for specie_list in df.loc[idxs, 'species'].to_list():
-            for specie in specie_list:
-                stat_dict[dataset_name]['species'].append(int(Element(specie).Z))
+            if specie_list is not None:
+                for specie in specie_list:
+                    stat_dict[dataset_name]['species'].append(int(Element(specie).Z))
         validity_params = ['formula', 'spacegroup', 'bond_length', 'site_multiplicity']
         for param in validity_params:
             validity_data = df.loc[idxs, f'validity.{param}'].replace({None: False})
