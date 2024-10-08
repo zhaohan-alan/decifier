@@ -253,11 +253,14 @@ def get_metrics(ckpt_path):
     fname = '/'.join(ckpt_path.split('/')[:-1])
     return metrics, fname
 
-def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=None, ymax=None, offset = 0.02, plot_metrics=True, figsize=(10,5)):
+def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=None, ymax=None, offset=0.02, plot_metrics=True, figsize=(10, 5)):
+    # Apply Seaborn style
+    sns.set(style="whitegrid")
+    #plt.figure(figsize=figsize, dpi=150)
     fig, ax_loss = plt.subplots(figsize=figsize, dpi=150)
     text_positions = []
 
-    ax_loss.set(xlabel='Epoch', ylabel='CE-Loss')
+    ax_loss.set(xlabel='Epoch', ylabel='Cross-Entropy Loss')
 
     if xmin is not None or xmax is not None:
         ax_loss.set_xlim(xmin, xmax)
@@ -267,25 +270,31 @@ def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=No
         ax_loss.set_yscale('log')
     if xlog:
         ax_loss.set_xscale('log')
-    ax_loss.grid(alpha=0.2, which="both")
+    
+    # Seaborn grid
+    ax_loss.grid(alpha=0.4, which="both")
 
     for path in paths:
         metrics, fname = get_metrics(path)
         legend_fname = '/'.join(fname.split("/")[-2:])
-        losses_train, losses_val, epochs = metrics['train_losses'], metrics['val_losses'], metrics['epoch_losses']
         
-        # Losses
-        p = ax_loss.plot(epochs, losses_train, label=legend_fname + f' [{losses_val[-1].item():1.3f}]')
-        ax_loss.plot(epochs, losses_val, c=p[0].get_color(), ls='--')
+        # Convert lists to numpy arrays for plotting
+        losses_train = np.array(metrics['train_losses'])
+        losses_val = np.array(metrics['val_losses'])
+        epochs = np.array(metrics['epoch_losses'])
+        
+        # Train and validation loss plots
+        p = sns.lineplot(x=epochs, y=losses_train, label=f'{legend_fname} [Train]', ax=ax_loss, linewidth=2)
+        sns.lineplot(x=epochs, y=losses_val, label=f'{legend_fname} [Validation]', ax=ax_loss, linewidth=2, linestyle='--', color=p.get_lines()[-1].get_color())
         
         # Find the minimum value in losses_val and its corresponding epoch
         try:
-            val_line_min = epochs[np.argmin(losses_val)].item()
-            min_loss_val = torch.min(losses_val).item()
+            val_line_min = epochs[np.argmin(losses_val)]
+            min_loss_val = np.min(losses_val)
         
             # Plot the dotted line
             ax_loss.plot([val_line_min, ax_loss.get_xlim()[1]], [min_loss_val, min_loss_val],
-                        c=p[0].get_color(), ls=':', alpha=1.0)
+                        c=p.get_lines()[-1].get_color(), ls=':', alpha=1.0)
 
             # Adjust text position if overlapping
             text_x = ax_loss.get_xlim()[1]
@@ -300,14 +309,20 @@ def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=No
 
             # Add text at the end of the dotted line
             ax_loss.text(text_x, text_y, f'{min_loss_val:.4f}', 
-                    verticalalignment=vert_align, horizontalalignment='right', color=p[0].get_color(),
+                    verticalalignment=vert_align, horizontalalignment='right', color=p.get_lines()[-1].get_color(),
                     fontsize=10)
             text_positions.append((text_x, text_y))
-        except:
+        except Exception as e:
+            print(f"Error plotting validation loss for {legend_fname}: {e}")
             pass
      
+    # Add the legend
     ax_loss.legend(fontsize=8)
+    
+    # Make the layout tight
     fig.tight_layout()
+
+    # Show the plot
     plt.show()
 
 def extract_prompt(sequence, device, add_composition=True, add_spacegroup=False):
