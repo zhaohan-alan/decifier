@@ -730,6 +730,7 @@ def main():
     os.makedirs(eval_files_dir, exist_ok=True)
 
     # Collect and combine evaluation files if the --collect-only flag is used
+    start = time()
     if args.collect_only:
         evaluations = collect_results(eval_files_dir)
         save_evaluations_to_parquet(evaluations, out_folder, args.dataset_name, time() - start)
@@ -744,7 +745,6 @@ def main():
             process.start()
 
         # Start processing the dataset
-        start = time()
         num_gens, num_send = process_dataset(
             h5_test_path,
             model,
