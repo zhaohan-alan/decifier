@@ -435,7 +435,7 @@ def save_evaluation(eval_result, structure_name, repetition_num, eval_files_dir)
             os.remove(temp_filename)  # Clean up incomplete temporary file
         raise IOError(f"Failed to save evaluation for {structure_name} (rep {repetition_num}): {e}")
 
-def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, override, **kwargs):
+def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, debug_max, override, **kwargs):
     """
     Processes a dataset, generates tokenized CIF prompts, and dispatches tasks to worker processes.
 
@@ -450,9 +450,10 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
         input_queue (multiprocessing.Queue): Queue to which tasks are submitted for worker processes.
         eval_files_dir (str): Directory where evaluation files are saved. This is used to check for already processed files.
         num_workers (int): Number of worker processes that will consume tasks from the input queue.
+        debug_max (int, optional): Maximum number of samples to process in debug mode.
+        override (bool): If True, ignores check of exisiting files.
         **kwargs: Additional keyword arguments, including:
             - 'num_reps' (int): Number of repetitions for generating new sequences for each sample.
-            - 'debug_max' (int, optional): Maximum number of samples to process in debug mode.
             - 'add_composition' (bool): Whether to include composition information in the prompt.
             - 'add_spacegroup' (bool): Whether to include spacegroup information in the prompt.
             - 'max_new_tokens' (int): Maximum number of new tokens to generate.
@@ -462,7 +463,6 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
             - 'dataset_name' (str): Name of the dataset for saving purposes.
             - 'model_name' (str): Name of the model for saving purposes.
             - 'debug' (bool): If True, enables debug mode with additional output.
-            - 'override' (bool): If True, ignores check of exisiting files.
     
     Returns:
         None: The function puts tasks into the input queue for workers and terminates when the queue is exhausted.
@@ -475,7 +475,11 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl")))
     
     # Calculate the number of generations to process, constrained by `debug_max` if provided
-    num_generations = min(len(test_dataset) * kwargs['num_reps'], kwargs.get('debug_max', len(test_dataset)) * kwargs['num_reps'])
+    if debug_max is None:
+        num_generations = len(test_dataset) * kwargs['num_reps']
+    else:
+        num_generations = min(len(test_dataset) * kwargs['num_reps'], debug_max)
+
     num_send = num_generations
 
     # Progress bar to track the processing status
