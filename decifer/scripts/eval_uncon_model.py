@@ -675,7 +675,7 @@ def main():
             'r_cut': 6.0,
             'n_max': 8,
             'l_max': 6,
-            'sigma': 0.5,
+            'sigma': 1.0,
             'rbf': 'gto',
             'compression_mode': 'crossover',
             'periodic': True,
