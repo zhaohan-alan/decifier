@@ -645,13 +645,6 @@ def main():
     # Parse command-line arguments
     args = parser.parse_args()
 
-    # Load configuration from YAML file
-    #with open(args.config_path, "r") as f:
-    #    yaml_config = yaml.safe_load(f)
-    #config = OmegaConf.create(yaml_config)
-    
-    # Load model from checkpoint, unless in no-model mode
-    #ckpt_path = os.path.join(args.root, config["out_dir"], 'ckpt.pt')
     ckpt_path = args.model_ckpt
     if args.no_model:
         model = None
