@@ -36,6 +36,7 @@ class LoRALayer(nn.Module):
 class DeciferConfig:
     block_size: int = 1024
     vocab_size: int = 372
+    cond_size: int = 1000
     n_layer: int = 8
     n_head: int = 8
     n_embd: int = 512
@@ -126,6 +127,7 @@ class CausalSelfAttention(nn.Module):
             if attention_bias is not None:
                 # Expand attention_bias to match the number of heads
                 attention_bias = attention_bias.unsqueeze(1) # Shape (B, 1, T, T)
+                attention_bias = attention_bias.expand(B, self.n_head, T, T)  # Expand to (B, n_head, T, T)
                 y = torch.nn.functional.scaled_dot_product_attention(
                     q, k, v, attn_mask=attention_bias, dropout_p=self.dropout
                 )
@@ -202,7 +204,7 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, attention_bias: Tensor = None) -> Tensor:
         """
         Forward pass for the Transformer Block module. A Block module includes causal self-attention,
         layer normalization, and MLP, and residual connections.
@@ -210,7 +212,7 @@ class Block(nn.Module):
         :param x: input to the transformer block
         :returns: output of the transformer block, with the same shape as in the input
         """
-        x = x + self.attn(self.ln_1(x))
+        x = x + self.attn(self.ln_1(x), attention_bias)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -220,10 +222,12 @@ class Decifer(nn.Module):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
+        if config.condition_with_emb:
+            assert config.cond_size is not None
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
-            cond_embedding=nn.Linear(config.block_size, config.n_embd) if config.condition_with_emb else None,
+            cond_embedding=nn.Linear(config.cond_size, config.n_embd) if config.condition_with_emb else None,
             wte=nn.Embedding(config.vocab_size, config.n_embd),
             wpe=nn.Embedding(config.block_size, config.n_embd),
             drop=nn.Dropout(config.dropout),
@@ -267,8 +271,173 @@ class Decifer(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-    
-    def forward(self, idx, cond_vec=None, targets=None, start_indices_batch=None,):
+
+    def forward(self, idx, cond_vec=None, targets=None, start_indices_batch=None):
+        device = idx.device
+        b, t = idx.size()
+        ptdtype = self.transformer.wte.weight.dtype
+
+        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+
+        # Original positions
+        positions = torch.arange(t, device=device).unsqueeze(0).expand(b, t)  # shape (b, t)
+
+        # Token and position embeddings
+        tok_emb = self.transformer.wte(idx)  # shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe(positions)  # shape (b, t, n_embd)
+
+        # Initialize variables
+        attention_bias = None
+
+        if start_indices_batch is not None:
+            # Convert start_indices_batch into a padded tensor
+            max_num_inserts = max(len(s) for s in start_indices_batch)
+            start_indices_padded = torch.full((b, max_num_inserts), t, dtype=torch.long, device=device)  # Fill with t (invalid index)
+            num_inserts_per_seq = torch.zeros(b, dtype=torch.long, device=device)
+            for i, s in enumerate(start_indices_batch):
+                num_inserts = len(s)
+                if num_inserts > 0:
+                    start_indices_padded[i, :num_inserts] = torch.tensor(s, device=device)
+                    num_inserts_per_seq[i] = num_inserts
+
+            # Compute new sequence lengths
+            new_lengths = t + num_inserts_per_seq
+            max_new_t = new_lengths.max().item()
+
+            # Create insert_mask indicating where to insert cond_emb
+            insert_mask = torch.zeros((b, max_new_t), dtype=torch.bool, device=device)
+            batch_indices = torch.arange(b, device=device).unsqueeze(1).expand(-1, max_num_inserts)  # shape (b, max_num_inserts)
+            insertion_offsets = torch.arange(max_num_inserts, device=device).unsqueeze(0).expand(b, -1)  # shape (b, max_num_inserts)
+            valid_inserts = start_indices_padded < t  # Ignore padding positions
+
+            # Compute insert positions accounting for previous insertions
+            adjusted_insert_positions = start_indices_padded + insertion_offsets
+            adjusted_insert_positions = adjusted_insert_positions[valid_inserts]
+            batch_indices = batch_indices[valid_inserts]
+            insert_mask[batch_indices, adjusted_insert_positions] = True
+
+            # Build index map for gathering original embeddings
+            cumsum_insert_mask = torch.cumsum(insert_mask, dim=1)
+            positions_in_new_seq = torch.arange(max_new_t, device=device).unsqueeze(0).expand(b, -1)
+            orig_positions = positions_in_new_seq - cumsum_insert_mask
+            valid_positions = (orig_positions >= 0) & (orig_positions < t) & (~insert_mask)
+            index_map = torch.full((b, max_new_t), -1, dtype=torch.long, device=device)  # -1 indicates conditioning
+
+            index_map[valid_positions] = orig_positions[valid_positions]
+
+            # Prepare new embeddings
+            tok_emb_new = torch.zeros((b, max_new_t, self.config.n_embd), dtype=ptdtype, device=device)
+            #print(tok_emb_new.dtype)
+            pos_emb_new = torch.zeros((b, max_new_t, self.config.n_embd), dtype=ptdtype, device=device)
+
+            # Gather token and position embeddings using index_map
+            valid_idx = index_map >= 0
+            batch_idx, seq_idx = torch.nonzero(valid_idx, as_tuple=True)
+            orig_idx = index_map[valid_idx]
+            tok_emb_new[batch_idx, seq_idx] = tok_emb[batch_idx, orig_idx]
+            pos_emb_new[batch_idx, seq_idx] = pos_emb[batch_idx, orig_idx]
+
+            # Insert conditioning embeddings
+            if cond_vec is not None and self.config.condition_with_emb:
+                # Compute cond_emb
+                cond_emb = self.transformer.cond_embedding(cond_vec).to(dtype=ptdtype)  # Shape: (total_insertions, n_embd)
+
+                # Map cond_emb to insert_positions
+                insert_positions = torch.nonzero(insert_mask, as_tuple=True)
+                # insert_positions[0]: batch indices
+                # insert_positions[1]: sequence positions
+
+                # Build a mapping from insert_positions to cond_emb indices
+                # Compute cond_emb indices
+                # For each batch, we need to know how many insertions have occurred before in previous batches
+                num_inserts_cumsum = torch.cumsum(num_inserts_per_seq, dim=0)
+                cond_emb_indices = torch.zeros_like(insert_positions[0], dtype=torch.long)
+                batch_insert_offset = torch.zeros(b, dtype=torch.long, device=device)
+                batch_insert_offset[1:] = num_inserts_cumsum[:-1]
+                cond_emb_indices = batch_insert_offset[insert_positions[0]]
+                # Add position within each batch
+                batch_insert_positions = insertion_offsets[valid_inserts]
+                cond_emb_indices += batch_insert_positions
+
+                # Now insert cond_emb into tok_emb_new
+                tok_emb_new[insert_positions[0], insert_positions[1]] = cond_emb[cond_emb_indices]
+                # Position embeddings at insert positions remain zero (already initialized)
+
+            # Update variables
+            tok_emb = tok_emb_new
+            pos_emb = pos_emb_new
+            positions = positions_in_new_seq
+            t = max_new_t
+
+            # Build start_mask_new
+            start_mask = insert_mask.long()
+
+            # Recompute group_ids
+            group_ids = torch.cumsum(start_mask, dim=1)
+
+            # Recompute positions_in_group
+            last_start_positions = torch.where(start_mask == 1, positions, torch.tensor(0, device=device))
+            last_start_positions, _ = torch.cummax(last_start_positions, dim=1)
+            positions_in_group = positions - last_start_positions
+
+            # Recompute attention_bias
+            attention_mask = (group_ids.unsqueeze(2) == group_ids.unsqueeze(1)) & \
+                             (positions.unsqueeze(2) >= positions.unsqueeze(1))
+            attention_bias = torch.zeros_like(attention_mask, dtype=ptdtype)
+            attention_bias.masked_fill_(~attention_mask, float('-inf'))
+            # attention_bias is (B, T, T)
+
+            # Adjust targets if provided
+            if targets is not None:
+                idx_new = torch.full((b, max_new_t), Tokenizer().padding_id, dtype=idx.dtype, device=device)
+                targets_new = torch.full((b, max_new_t), -1, dtype=targets.dtype, device=device)  # Ignore index
+                idx_new[batch_idx, seq_idx] = idx[batch_idx, orig_idx]
+                targets_new[batch_idx, seq_idx] = targets[batch_idx, orig_idx]
+                idx = idx_new
+                targets = targets_new
+        else:
+            positions_in_group = positions
+            if self.config.boundary_masking:
+                # Compute attention_bias based on start_indices_batch
+                # Similar steps as above without insertions
+                start_mask = torch.zeros((b, t), dtype=torch.long, device=device)
+                for i, start_indices in enumerate(start_indices_batch):
+                    valid_indices = torch.tensor(start_indices, device=device)
+                    valid_indices = valid_indices[(valid_indices >= 0) & (valid_indices < t)]
+                    start_mask[i, valid_indices] = 1
+
+                group_ids = torch.cumsum(start_mask, dim=1)
+                last_start_positions = torch.where(start_mask == 1, positions, torch.tensor(0, device=device))
+                last_start_positions, _ = torch.cummax(last_start_positions, dim=1)
+                positions_in_group = positions - last_start_positions
+
+                attention_mask = (group_ids.unsqueeze(2) == group_ids.unsqueeze(1)) & \
+                                 (positions.unsqueeze(2) >= positions.unsqueeze(1))
+                attention_bias = torch.zeros_like(attention_mask, dtype=ptdtype)
+                attention_bias.masked_fill_(~attention_mask, float('-inf'))
+                # attention_bias is (B, T, T)
+
+        # Combine token and position embeddings
+        x = self.transformer.drop(tok_emb + pos_emb)
+
+        # Forward pass through transformer blocks
+        for block in self.transformer.h:
+            x = block(x, attention_bias=attention_bias)
+
+        x = self.transformer.ln_f(x)
+
+        if targets is not None:
+            logits = self.lm_head(x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+        else:
+            # Inference mode
+            logits = self.lm_head(x[:, [-1], :])  # only the last token
+            loss = None
+
+        return logits, loss
+
+
+    def forward_old(self, idx, cond_vec=None, targets=None, start_indices_batch=None,):
         device = idx.device
         b, t = idx.size()
         ptdtype = self.transformer.wte.weight.dtype
@@ -342,7 +511,7 @@ class Decifer(nn.Module):
         # Conditioning
         if cond_vec is not None:
             cond_emb = self.transformer.cond_embedding(cond_vec).unsqueeze(1) # shape (b, 1, n_embd)
-            tok_emb = torch.cat([cond_emd, tok_emb], dim=1)
+            tok_emb = torch.cat([cond_emb, tok_emb], dim=1)
             pos_emb = torch.cat([torch.zeros_like(cond_emb), pos_emb], dim=1)
             t = t + 1 # Update sequence length
 
@@ -444,7 +613,7 @@ class Decifer(nn.Module):
         return optimizer
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, disable_pbar=False):
+    def generate(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None, disable_pbar=False):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -459,7 +628,7 @@ class Decifer(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            logits, _ = self(idx_cond, cond_vec=cond_vec, start_indices_batch = start_indices_batch)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
@@ -486,7 +655,7 @@ class Decifer(nn.Module):
         return idx
 
     @torch.no_grad()
-    def generate_batched_reps(self, idx, max_new_tokens, temperature=1.0, top_k=None, disable_pbar=False):
+    def generate_batched_reps(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None, disable_pbar=False):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (batch_size, seq_len)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -506,7 +675,7 @@ class Decifer(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            logits, _ = self(idx_cond, cond_vec=cond_vec, start_indices_batch=start_indices_batch)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
@@ -546,7 +715,7 @@ class Decifer(nn.Module):
         return idx_truncated
     
     @torch.no_grad()
-    def generate_and_print(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate_and_print(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -567,7 +736,7 @@ class Decifer(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            logits, _ = self(idx_cond, cond_vec=cond_vec, start_indices_batch=start_indices_batch)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
