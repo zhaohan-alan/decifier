@@ -349,8 +349,10 @@ def extract_prompt(sequence, device, add_composition=True, add_spacegroup=False)
         if add_spacegroup:
             end_prompt_index += np.argwhere(sequence[end_prompt_index:] == spacegroup_id)[0][0]
             end_prompt_index += np.argwhere(sequence[end_prompt_index:] == new_line_id)[0][0]
+            
+        end_prompt_index += 1
     
-    prompt_ids = torch.tensor(sequence[:end_prompt_index+1].long()).to(device=device)
+    prompt_ids = torch.tensor(sequence[:end_prompt_index].long()).to(device=device)
 
     return prompt_ids
 

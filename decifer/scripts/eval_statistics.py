@@ -378,17 +378,20 @@ def plot_histograms(stat_dict, output_dir):
     axes[2].set(title='Sequence Length', xlabel='Seq Len')
 
     for i, param in enumerate(cell_params):
-        print(len(all_cell_params[param]))
-        sns.histplot(
-            x=all_cell_params[param],
-            bins=cell_params_bins[param],
-            ax=axes[3+i],
-            hue=dataset_labels_cell_params[param],
-            element='step',
-            stat='density',
-            common_norm=False
-        )
-        axes[3+i].set(title=f'Cell Param: {param}', xlabel=param)
+        #print(len(all_cell_params[param]))
+        try:
+            sns.histplot(
+                x=all_cell_params[param],
+                bins=cell_params_bins[param],
+                ax=axes[3+i],
+                hue=dataset_labels_cell_params[param],
+                element='step',
+                stat='density',
+                common_norm=False
+            )
+            axes[3+i].set(title=f'Cell Param: {param}', xlabel=param)
+        except:
+            continue
 
     for ax in axes.flatten():
         ax.set(ylabel='Density', xlim=(0, None), ylim=(None, None))
