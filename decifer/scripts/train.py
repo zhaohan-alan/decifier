@@ -50,6 +50,7 @@ class TrainConfig:
     gradient_accumulation_steps: int = 40  # used to simulate larger batch sizes
     batch_size: int = 64  # if gradient_accumulation_steps > 1, this is the micro-batch size
     block_size: int = 2048  # context of up to `block_size` previous characters
+    cond_size: int = 1000
     accumulative_pbar: bool = False
     packing: bool = True
     num_workers_dataloader: int = 0 # Default; single process
@@ -140,6 +141,7 @@ if __name__ == "__main__":
     try:
         C.vocab_size = metadata["voacb_size"]
         print(f"Found vocab_size = {C.vocab_size} in {metadata_path}", flush=True)
+        # TODO Get conditioning size from metadata as well
     except:
         print(f"No metadata found, defaulting...")
 
@@ -185,6 +187,9 @@ if __name__ == "__main__":
         "test": test_dataloader,
     }
 
+    # TEMP (TODO get cond size from metadata)
+    C.cond_size = next(iter(train_dataset))[1].shape[-1]
+
     # Initialize
     iter_num = 0
     best_val_loss = float('inf')
@@ -199,6 +204,7 @@ if __name__ == "__main__":
         n_head=C.n_head, 
         n_embd=C.n_embd, 
         block_size=C.block_size,
+        cond_size=C.cond_size,
         bias=C.bias, 
         vocab_size=C.vocab_size,
         dropout=C.dropout,
@@ -340,9 +346,14 @@ if __name__ == "__main__":
             if conditioning:
                 cond_list.extend(cond_batch)
 
+        #print(len(sequences))
+        #print(len(cond_batch))
+        #print("GOOD")
+
         # Now pack sequences into batches without loops
         # Concatenate all sequences into one long tensor
         all_tokens = torch.cat(total_sequences)
+        #print("all tokens", all_tokens.shape)
 
         # Compute the lengths of sequences
         seq_lengths = torch.tensor([len(seq) for seq in total_sequences])
@@ -353,20 +364,27 @@ if __name__ == "__main__":
         # Calculate how many full blocks we can get from the concatenated tokens
         num_full_blocks = all_tokens.size(0) // block_size
         num_batches = min(batch_size, num_full_blocks)
+        #print("num_full_blocks", num_full_blocks)
+        #print("num_batches", num_batches)
 
         # Truncate the tokens to fit into an integer number of blocks
         total_tokens = all_tokens[:num_batches * block_size]
+        #print("len total tokens", total_tokens.shape)
 
         # Reshape the tokens into (num_batches, block_size)
         total_tokens = total_tokens.view(num_batches, block_size)
+        #print("total tokens", total_tokens.shape)
 
         # Create input (X) and target (Y) sequences
         X_batch = total_tokens[:, :-1]
+        #print("X batch shape", X_batch.shape)
         Y_batch = total_tokens[:, 1:]
 
         # Find start indices within each batch
         start_token_mask = X_batch == start_token_id
         start_indices = start_token_mask.nonzero(as_tuple=False)
+        #print("get_batch, start_indices", start_indices)
+        #print("start indices", start_indices)
 
         # Organize start indices per batch item
         start_indices_list = []
@@ -374,11 +392,17 @@ if __name__ == "__main__":
             indices = start_indices[start_indices[:, 0] == i][:, 1]
             start_indices_list.append(indices)
 
+        #print("start indices list", start_indices_list)
+
         # Handle conditioning data if required
         if conditioning and cond_list:
             # Collect conditioning data corresponding to sequences included
-            cond_list = cond_list[:seq_cum_lengths.searchsorted(num_batches * block_size)]
-            cond_batch = torch.stack(cond_list).to(C.device)
+            index = torch.searchsorted(seq_cum_lengths, num_batches * block_size)
+            #print("index", index)
+            #print(len())
+            cond_list = cond_list[:index+1]
+            cond_batch = torch.stack(cond_list)
+            #print(cond_batch.shape)
         else:
             cond_batch = None
         
@@ -386,11 +410,13 @@ if __name__ == "__main__":
         if C.device == "cuda":
             X_batch = X_batch.pin_memory().to(C.device, non_blocking=True)
             Y_batch = Y_batch.pin_memory().to(C.device, non_blocking=True)
-            cond_batch = cond_batch.pin_memory().to(C.device, non_blocking=True) if conditioning else cond_batch
+            if cond_batch is not None:
+                cond_batch = cond_batch.pin_memory().to(C.device, non_blocking=True)
         else:
             X_batch = X_batch.pin_memory().to(C.device)
             Y_batch = Y_batch.pin_memory().to(C.device)
-            cond_batch = cond_batch.pin_memory().to(C.device) if conditioning else cond_batch
+            if cond_batch is not None:
+                cond_batch = cond_batch.pin_memory().to(C.device)
 
         # Return the batch data and start indices
         return X_batch, Y_batch, cond_batch, start_indices_list
@@ -445,7 +471,7 @@ if __name__ == "__main__":
         for split, eval_iters in [("train", C.eval_iters_train), ("val", C.eval_iters_val)]:
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                X, Y, cond, start_indices = get_batch(split)
+                X, Y, cond, start_indices = get_batch(split, C.condition_with_emb)
                 with ctx:
                     logits, loss = model(X, cond, Y, start_indices)
                 losses[k] = loss.item()
@@ -474,7 +500,7 @@ if __name__ == "__main__":
         get_batch = get_batch_padded
 
     # training loop
-    X, Y, cond, start_indices = get_batch("train")
+    X, Y, cond, start_indices = get_batch("train", C.condition_with_emb)
     t0 = time.time()
     local_iter_num = 0  # number of iterations in the lifetime of this process
     while True:
@@ -541,7 +567,7 @@ if __name__ == "__main__":
             with ctx:
                 logits, loss = model(X, cond, Y, start_indices)
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            X, Y, cond, start_indices = get_batch("train")
+            X, Y, cond, start_indices = get_batch("train", C.condition_with_emb)
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
             small_step_pbar.update(1)
