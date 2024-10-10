@@ -289,7 +289,7 @@ class Decifer(nn.Module):
         # Initialize variables
         attention_bias = None
 
-        if start_indices_batch is not None:
+        if self.config.condition_with_emb:
             # Convert start_indices_batch into a padded tensor
             max_num_inserts = max(len(s) for s in start_indices_batch)
             start_indices_padded = torch.full((b, max_num_inserts), t, dtype=torch.long, device=device)  # Fill with t (invalid index)
@@ -337,31 +337,29 @@ class Decifer(nn.Module):
             tok_emb_new[batch_idx, seq_idx] = tok_emb[batch_idx, orig_idx]
             pos_emb_new[batch_idx, seq_idx] = pos_emb[batch_idx, orig_idx]
 
-            # Insert conditioning embeddings
-            if cond_vec is not None and self.config.condition_with_emb:
-                # Compute cond_emb
-                cond_emb = self.transformer.cond_embedding(cond_vec).to(dtype=ptdtype)  # Shape: (total_insertions, n_embd)
+            # Compute cond_emb
+            cond_emb = self.transformer.cond_embedding(cond_vec).to(dtype=ptdtype)  # Shape: (total_insertions, n_embd)
 
-                # Map cond_emb to insert_positions
-                insert_positions = torch.nonzero(insert_mask, as_tuple=True)
-                # insert_positions[0]: batch indices
-                # insert_positions[1]: sequence positions
+            # Map cond_emb to insert_positions
+            insert_positions = torch.nonzero(insert_mask, as_tuple=True)
+            # insert_positions[0]: batch indices
+            # insert_positions[1]: sequence positions
 
-                # Build a mapping from insert_positions to cond_emb indices
-                # Compute cond_emb indices
-                # For each batch, we need to know how many insertions have occurred before in previous batches
-                num_inserts_cumsum = torch.cumsum(num_inserts_per_seq, dim=0)
-                cond_emb_indices = torch.zeros_like(insert_positions[0], dtype=torch.long)
-                batch_insert_offset = torch.zeros(b, dtype=torch.long, device=device)
-                batch_insert_offset[1:] = num_inserts_cumsum[:-1]
-                cond_emb_indices = batch_insert_offset[insert_positions[0]]
-                # Add position within each batch
-                batch_insert_positions = insertion_offsets[valid_inserts]
-                cond_emb_indices += batch_insert_positions
+            # Build a mapping from insert_positions to cond_emb indices
+            # Compute cond_emb indices
+            # For each batch, we need to know how many insertions have occurred before in previous batches
+            num_inserts_cumsum = torch.cumsum(num_inserts_per_seq, dim=0)
+            cond_emb_indices = torch.zeros_like(insert_positions[0], dtype=torch.long)
+            batch_insert_offset = torch.zeros(b, dtype=torch.long, device=device)
+            batch_insert_offset[1:] = num_inserts_cumsum[:-1]
+            cond_emb_indices = batch_insert_offset[insert_positions[0]]
+            # Add position within each batch
+            batch_insert_positions = insertion_offsets[valid_inserts]
+            cond_emb_indices += batch_insert_positions
 
-                # Now insert cond_emb into tok_emb_new
-                tok_emb_new[insert_positions[0], insert_positions[1]] = cond_emb[cond_emb_indices]
-                # Position embeddings at insert positions remain zero (already initialized)
+            # Now insert cond_emb into tok_emb_new
+            tok_emb_new[insert_positions[0], insert_positions[1]] = cond_emb[cond_emb_indices]
+            # Position embeddings at insert positions remain zero (already initialized)
 
             # Update variables
             tok_emb = tok_emb_new
@@ -416,6 +414,19 @@ class Decifer(nn.Module):
                 attention_bias = torch.zeros_like(attention_mask, dtype=ptdtype)
                 attention_bias.masked_fill_(~attention_mask, float('-inf'))
                 # attention_bias is (B, T, T)
+        
+        #import matplotlib.pyplot as plt
+        #import seaborn as sns
+
+        #for i in range(b):
+        #    fig, ax = plt.subplots()
+        #    sns.heatmap(attention_bias[i].cpu().numpy(), cmap='viridis', cbar=True, ax=ax)
+        #    ax.invert_yaxis()
+        #    fig.savefig(f'attention_mask_{i}.png')
+        #    plt.close(fig)
+        #    for p in positions_in_group[i]:
+        #        print(p)
+        #print(len())
 
         # Combine token and position embeddings
         x = self.transformer.drop(tok_emb + pos_emb)
