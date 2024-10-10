@@ -344,14 +344,15 @@ def plot_histograms(stat_dict, output_dir):
     fig, axes = plt.subplots(4, 3, figsize=(14, 18))
     axes = axes.ravel()
 
-    sns.histplot(
+    a = sns.histplot(
         x=species_data,
         bins=species_bins,
         ax=axes[0],
         hue=dataset_labels_species,
         element='step',
         stat='density',
-        common_norm=False
+        common_norm=False,
+        legend=False
     )
     axes[0].set(title='Species', xlabel='Z')
 
@@ -362,7 +363,8 @@ def plot_histograms(stat_dict, output_dir):
         hue=dataset_labels_spacegroups,
         element='step',
         stat='density',
-        common_norm=False
+        common_norm=False,
+        legend=False
     )
     axes[1].set(title='Spacegroup', xlabel='Spg number')
 
@@ -373,12 +375,12 @@ def plot_histograms(stat_dict, output_dir):
         hue=dataset_labels_seq_len,
         element='step',
         stat='density',
-        common_norm=False
+        common_norm=False,
+        legend=False
     )
     axes[2].set(title='Sequence Length', xlabel='Seq Len')
 
     for i, param in enumerate(cell_params):
-        #print(len(all_cell_params[param]))
         try:
             sns.histplot(
                 x=all_cell_params[param],
@@ -387,15 +389,29 @@ def plot_histograms(stat_dict, output_dir):
                 hue=dataset_labels_cell_params[param],
                 element='step',
                 stat='density',
-                common_norm=False
+                common_norm=False,
+                legend=False
             )
             axes[3+i].set(title=f'Cell Param: {param}', xlabel=param)
         except:
             continue
+            
+    axes[-1].axis('off')
+    # Get the position of the axis in figure coordinates
+    bbox = axes[-1].get_position()
+
+    # Extract the upper left corner of the bounding box
+    upper_left = (bbox.x0+0.025, bbox.y1-0.05)  # (x0, y1) corresponds to the upper left
 
     for ax in axes.flatten():
         ax.set(ylabel='Density', xlim=(0, None), ylim=(None, None))
         ax.grid(alpha=0.2)
+        
+    labels = []
+    for key in stat_dict.keys():
+        if key is not None:
+            labels.append(key)
+    fig.legend(labels=labels, loc='upper left', bbox_to_anchor=upper_left)
 
     fig.tight_layout()
     # Save the plot
@@ -403,9 +419,9 @@ def plot_histograms(stat_dict, output_dir):
     plt.savefig(save_path, bbox_inches='tight')
     plt.close()
 
-def plot_boxplots(stat_dict, output_dir):
+def plot_violinplots(stat_dict, output_dir):
     """
-    Plot boxplots for different datasets.
+    Plot violinplots for different datasets.
 
     Parameters:
         stat_dict (dict): Dictionary containing statistical data.
@@ -439,7 +455,7 @@ def plot_boxplots(stat_dict, output_dir):
             params_data_dict[f'Cell Param: {param}'].extend(fields['cell_params'][param])
             params_labels_dict[f'Cell Param: {param}'].extend([dataset_name] * len(fields['cell_params'][param]))
 
-    # Plot boxplots
+    # Plot violinplots
     n_rows = 4
     n_cols = 3
     figsize = (12, 28)
@@ -455,7 +471,7 @@ def plot_boxplots(stat_dict, output_dir):
             'Dataset': dataset_labels
         })
 
-        sns.boxplot(x='Dataset', y=param, data=df, palette='pastel', linewidth=1.5, dodge=False, ax=axes[idx])
+        sns.violinplot(x='Dataset', y=param, data=df, palette='pastel', hue='Dataset', linewidth=1.5, dodge=False, ax=axes[idx])
         axes[idx].set_title(f'{param} Across Datasets')
         axes[idx].set_ylabel(param, fontsize=10)
         axes[idx].set_xlabel('Dataset', fontsize=10)
@@ -465,7 +481,7 @@ def plot_boxplots(stat_dict, output_dir):
 
     plt.tight_layout()
     # Save the plot
-    save_path = os.path.join(output_dir, 'Boxplots.png')
+    save_path = os.path.join(output_dir, 'Violinplot.png')
     plt.savefig(save_path, bbox_inches='tight')
     plt.close()
 
@@ -536,8 +552,8 @@ def main():
     # Plot histograms
     plot_histograms(stat_dict, args.output_dir)
 
-    # Plot boxplots
-    plot_boxplots(stat_dict, args.output_dir)
+    # Plot violinplots
+    plot_violinplots(stat_dict, args.output_dir)
 
     # Plot validity statistics
     plot_validity_stats(df, args.output_dir)

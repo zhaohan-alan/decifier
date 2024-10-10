@@ -39,7 +39,7 @@ def compute_proxy_a_distance(X, Y):
     y_combined = np.hstack([np.zeros(X.shape[0]), np.ones(Y.shape[0])])  # 0 for X, 1 for Y
     
     # Train a Random Forest classifier and compute cross-validated accuracy
-    clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    clf = RandomForestClassifier(n_estimators=1000, random_state=42)
     error_rates = 1 - cross_val_score(clf, X_combined, y_combined, cv=5, scoring='accuracy')
     avg_error_rate = np.mean(error_rates)
     
@@ -140,7 +140,7 @@ def main(eval_paths, output_path):
 
     # Add rows from DataFrame to the LaTeX string
     for _, row in results_df.iterrows():
-        table_str += f"\\text{{{row['Dataset 1']}}} & \\text{{{row['Dataset 2']}}} & {row['MMD']:.3f} & {row['Wasserstein Distance']:.2f} & {row['Proxy-A-Distance']:.2f} \\\\\n"
+        table_str += f"\\text{{{row['Dataset 1']}}} & \\text{{{row['Dataset 2']}}} & {row['MMD']:.5f} & {row['Wasserstein Distance']:.3f} & {row['Proxy-A-Distance']:.3f} \\\\\n"
         
     # Close the table
     table_str += r"\bottomrule" + "\n"
