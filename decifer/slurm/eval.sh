@@ -25,4 +25,4 @@ ARGS=("$@")
 # Display the arguments
 echo "Arguments passed: ${ARGS[*]}"
 
-python scripts/eval_uncon_model.py "${ARGS[@]}"
+python scripts/evaluate.py "${ARGS[@]}"
