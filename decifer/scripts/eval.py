@@ -435,7 +435,7 @@ def save_evaluation(eval_result, structure_name, repetition_num, eval_files_dir)
             os.remove(temp_filename)  # Clean up incomplete temporary file
         raise IOError(f"Failed to save evaluation for {structure_name} (rep {repetition_num}): {e}")
 
-def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, debug_max, override, **kwargs):
+def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, debug_max, override, condition, **kwargs):
     """
     Processes a dataset, generates tokenized CIF prompts, and dispatches tasks to worker processes.
 
@@ -452,6 +452,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
         num_workers (int): Number of worker processes that will consume tasks from the input queue.
         debug_max (int, optional): Maximum number of samples to process in debug mode.
         override (bool): If True, ignores check of exisiting files.
+        condition (bool): If True, conditions the generations on the XRD patterns.
         **kwargs: Additional keyword arguments, including:
             - 'num_reps' (int): Number of repetitions for generating new sequences for each sample.
             - 'add_composition' (bool): Whether to include composition information in the prompt.
@@ -489,7 +490,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
     padding_id = Tokenizer().padding_id
 
     # Iterate over the dataset samples
-    for i, (structure_name, sample, xrd_cont_x, xrd_cont_y) in enumerate(test_dataset):
+    for i, (structure_name, sample, xrd_cont_q, xrd_cont_iq) in enumerate(test_dataset):
         if i >= num_generations:
             break  # Stop processing if we've reached the generation limit (in debug mode)
         
@@ -508,7 +509,12 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
         
         if prompt is not None:
             # Generate token sequences from the model's output
-            token_ids = model.generate_batched_reps(prompt, max_new_tokens=kwargs['max_new_tokens']).cpu().numpy()
+            if condition:
+                cond_vec = xrd_cont_iq.to(model.device)
+            else:
+                cond_vec = None
+            token_ids = model.generate_batched_reps(prompt, max_new_tokens=kwargs['max_new_tokens'], cond_vec=cond_vec, start_indices_batch=[[0]]).cpu().numpy()
+            print(token_ids)
             token_ids = [ids[ids != padding_id] for ids in token_ids]  # Remove padding tokens
         else:
             token_ids = [sample[sample != padding_id].cpu().numpy()]
@@ -521,7 +527,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
                 'index': i,
                 'rep': rep_num,
                 'xrd_parameters': kwargs['xrd_parameters'],
-                'xrd_from_sample': {'q': xrd_cont_x.numpy(), 'iq': xrd_cont_y.numpy()},
+                'xrd_from_sample': {'q': xrd_cont_q.numpy(), 'iq': xrd_cont_iq.numpy()},
                 'desc_parameters': kwargs['desc_parameters'],
                 'species': kwargs['species'],
                 'dataset': kwargs['dataset_name'],
@@ -632,6 +638,7 @@ def main():
     parser.add_argument('--num-reps', type=int, default=1, help='Number of repetitions per sample.')
     parser.add_argument('--collect-only', action='store_true', help='Just collect eval files and combine.')
     parser.add_argument('--override', action='store_true', help='Overrides the presence of existing files, effectively generating everything from scratch')
+    parser.add_argument('--condition', action='store_true', help='Flag to condition the generations on XRD')
 
     # Argument parsing for required and optional arguments
     parser.add_argument('--soap-r_cut', type=float, default=None, help='SOAP: Cutoff radius.')
@@ -764,6 +771,7 @@ def main():
             desc_parameters=metadata['descriptors'],
             species=metadata['species'],
             override=args.override,
+            condition=args.condition,
         )
 
         if num_send > 0:
