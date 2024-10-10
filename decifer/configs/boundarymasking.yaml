@@ -1,4 +1,4 @@
-out_dir: 'cross-contamination/crystal_full_models/boundary_masking'
+out_dir: 'cross-contamination/crystal_full_models/attn_bias_position_resetting'
 eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200
 eval_iters_val: 200
@@ -6,7 +6,7 @@ log_interval: 1  # how often to print to the console (1 = every iteration)
 init_from: 'scratch'
 
 device: 'cuda'
-compile: True
+compile: False
 
 dtype: 'float16'
 
