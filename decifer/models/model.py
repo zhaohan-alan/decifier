@@ -48,6 +48,7 @@ class DeciferConfig:
     lora_proj: bool = False
     condition_with_emb: bool = False
     boundary_masking: bool = True
+    cond_hidden_size: int = 256
 
 class LayerNorm(nn.Module):
 
@@ -227,7 +228,12 @@ class Decifer(nn.Module):
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
-            cond_embedding=nn.Linear(config.cond_size, config.n_embd) if config.condition_with_emb else None,
+            cond_embedding=nn.Sequential(
+                nn.Linear(config.cond_size, config.cond_hidden_size),
+                nn.ReLU(),
+                nn.Linear(config.cond_hidden_size, config.n_embd),
+
+            ) if config.condition_with_emb else None,
             wte=nn.Embedding(config.vocab_size, config.n_embd),
             wpe=nn.Embedding(config.block_size, config.n_embd),
             drop=nn.Dropout(config.dropout),
@@ -303,6 +309,7 @@ class Decifer(nn.Module):
             # Compute new sequence lengths
             new_lengths = t + num_inserts_per_seq
             max_new_t = new_lengths.max().item()
+            #print(t, max_new_t)
 
             # Create insert_mask indicating where to insert cond_emb
             insert_mask = torch.zeros((b, max_new_t), dtype=torch.bool, device=device)
@@ -316,50 +323,106 @@ class Decifer(nn.Module):
             batch_indices = batch_indices[valid_inserts]
             insert_mask[batch_indices, adjusted_insert_positions] = True
 
-            # Build index map for gathering original embeddings
-            cumsum_insert_mask = torch.cumsum(insert_mask, dim=1)
-            positions_in_new_seq = torch.arange(max_new_t, device=device).unsqueeze(0).expand(b, -1)
-            orig_positions = positions_in_new_seq - cumsum_insert_mask
-            valid_positions = (orig_positions >= 0) & (orig_positions < t) & (~insert_mask)
-            index_map = torch.full((b, max_new_t), -1, dtype=torch.long, device=device)  # -1 indicates conditioning
+            if True:
+                # Build index map for gathering original embeddings
+                cumsum_insert_mask = torch.cumsum(insert_mask, dim=1)
+                positions_in_new_seq = torch.arange(max_new_t, device=device).unsqueeze(0).expand(b, -1)
+                orig_positions = positions_in_new_seq - cumsum_insert_mask
+                valid_positions = (orig_positions >= 0) & (orig_positions < t) & (~insert_mask)
+                index_map = torch.full((b, max_new_t), -1, dtype=torch.long, device=device)  # -1 indicates conditioning
 
-            index_map[valid_positions] = orig_positions[valid_positions]
+                index_map[valid_positions] = orig_positions[valid_positions]
 
-            # Prepare new embeddings
-            tok_emb_new = torch.zeros((b, max_new_t, self.config.n_embd), dtype=ptdtype, device=device)
-            #print(tok_emb_new.dtype)
-            pos_emb_new = torch.zeros((b, max_new_t, self.config.n_embd), dtype=ptdtype, device=device)
+                # Create masks for cond_emb and tok_emb positions
+                cond_emb_mask = (index_map == -1)  # Shape: (b, max_new_t)
+                tok_emb_mask = (index_map >= 0)    # Shape: (b, max_new_t)
 
-            # Gather token and position embeddings using index_map
-            valid_idx = index_map >= 0
-            batch_idx, seq_idx = torch.nonzero(valid_idx, as_tuple=True)
-            orig_idx = index_map[valid_idx]
-            tok_emb_new[batch_idx, seq_idx] = tok_emb[batch_idx, orig_idx]
-            pos_emb_new[batch_idx, seq_idx] = pos_emb[batch_idx, orig_idx]
+                # Compute cond_emb
+                cond_emb = self.transformer.cond_embedding(cond_vec).to(dtype=ptdtype)  # Shape: (total_insertions, n_embd)
 
-            # Compute cond_emb
-            cond_emb = self.transformer.cond_embedding(cond_vec).to(dtype=ptdtype)  # Shape: (total_insertions, n_embd)
+                # Prepare indices for gathering tok_emb and pos_emb
+                gather_indices = index_map.clamp(min=0)  # Replace -1 with 0 to prevent out-of-bounds
+                gather_indices_expanded = gather_indices.unsqueeze(-1).expand(-1, -1, self.config.n_embd)  # Shape: (b, max_new_t, n_embd)
 
-            # Map cond_emb to insert_positions
-            insert_positions = torch.nonzero(insert_mask, as_tuple=True)
-            # insert_positions[0]: batch indices
-            # insert_positions[1]: sequence positions
+                # Gather tok_emb and pos_emb
+                tok_emb_gathered = tok_emb.gather(1, gather_indices_expanded)  # Shape: (b, max_new_t, n_embd)
+                pos_emb_gathered = pos_emb.gather(1, gather_indices_expanded)
 
-            # Build a mapping from insert_positions to cond_emb indices
-            # Compute cond_emb indices
-            # For each batch, we need to know how many insertions have occurred before in previous batches
-            num_inserts_cumsum = torch.cumsum(num_inserts_per_seq, dim=0)
-            cond_emb_indices = torch.zeros_like(insert_positions[0], dtype=torch.long)
-            batch_insert_offset = torch.zeros(b, dtype=torch.long, device=device)
-            batch_insert_offset[1:] = num_inserts_cumsum[:-1]
-            cond_emb_indices = batch_insert_offset[insert_positions[0]]
-            # Add position within each batch
-            batch_insert_positions = insertion_offsets[valid_inserts]
-            cond_emb_indices += batch_insert_positions
+                # Zero out positions where index_map was -1
+                tok_emb_gathered = tok_emb_gathered * tok_emb_mask.unsqueeze(-1)
+                pos_emb_gathered = pos_emb_gathered * tok_emb_mask.unsqueeze(-1)
 
-            # Now insert cond_emb into tok_emb_new
-            tok_emb_new[insert_positions[0], insert_positions[1]] = cond_emb[cond_emb_indices]
-            # Position embeddings at insert positions remain zero (already initialized)
+                # Initialize tok_emb_new and pos_emb_new
+                tok_emb_new = tok_emb_gathered.clone()
+                pos_emb_new = pos_emb_gathered
+
+                # Map cond_emb to insert_positions
+                insert_positions = torch.nonzero(insert_mask, as_tuple=True)
+                # insert_positions[0]: batch indices
+                # insert_positions[1]: sequence positions
+
+                # Build a mapping from insert_positions to cond_emb indices
+                # Compute cond_emb indices
+                # For each batch, we need to know how many insertions have occurred before in previous batches
+                num_inserts_cumsum = torch.cumsum(num_inserts_per_seq, dim=0)
+                cond_emb_indices = torch.zeros_like(insert_positions[0], dtype=torch.long)
+                batch_insert_offset = torch.zeros(b, dtype=torch.long, device=device)
+                batch_insert_offset[1:] = num_inserts_cumsum[:-1]
+                cond_emb_indices = batch_insert_offset[insert_positions[0]]
+                # Add position within each batch
+                batch_insert_positions = insertion_offsets[valid_inserts]
+                cond_emb_indices += batch_insert_positions
+
+                # Map cond_emb to the correct positions in tok_emb_new
+                cond_emb_full = torch.zeros_like(tok_emb_new)
+                cond_emb_full[insert_positions[0], insert_positions[1]] = cond_emb[cond_emb_indices]
+                tok_emb_new = tok_emb_new + cond_emb_full  # Combine tok_emb_gathered and cond_emb_full
+
+                # Positions for cond_emb in pos_emb_new are already zero (since they are zero-initialized)
+            else:
+                # Build index map for gathering original embeddings
+                cumsum_insert_mask = torch.cumsum(insert_mask, dim=1)
+                positions_in_new_seq = torch.arange(max_new_t, device=device).unsqueeze(0).expand(b, -1)
+                orig_positions = positions_in_new_seq - cumsum_insert_mask
+                valid_positions = (orig_positions >= 0) & (orig_positions < t) & (~insert_mask)
+                index_map = torch.full((b, max_new_t), -1, dtype=torch.long, device=device)  # -1 indicates conditioning
+
+                index_map[valid_positions] = orig_positions[valid_positions]
+
+                # Prepare new embeddings
+                tok_emb_new = torch.zeros((b, max_new_t, self.config.n_embd), dtype=ptdtype, device=device)
+                pos_emb_new = torch.zeros((b, max_new_t, self.config.n_embd), dtype=ptdtype, device=device)
+
+                # Gather token and position embeddings using index_map
+                valid_idx = index_map >= 0
+                batch_idx, seq_idx = torch.nonzero(valid_idx, as_tuple=True)
+                orig_idx = index_map[valid_idx]
+                tok_emb_new[batch_idx, seq_idx] = tok_emb[batch_idx, orig_idx]
+                pos_emb_new[batch_idx, seq_idx] = pos_emb[batch_idx, orig_idx]
+
+                # Compute cond_emb
+                cond_emb = self.transformer.cond_embedding(cond_vec).to(dtype=ptdtype)  # Shape: (total_insertions, n_embd)
+
+                # Map cond_emb to insert_positions
+                insert_positions = torch.nonzero(insert_mask, as_tuple=True)
+                # insert_positions[0]: batch indices
+                # insert_positions[1]: sequence positions
+
+                # Build a mapping from insert_positions to cond_emb indices
+                # Compute cond_emb indices
+                # For each batch, we need to know how many insertions have occurred before in previous batches
+                num_inserts_cumsum = torch.cumsum(num_inserts_per_seq, dim=0)
+                cond_emb_indices = torch.zeros_like(insert_positions[0], dtype=torch.long)
+                batch_insert_offset = torch.zeros(b, dtype=torch.long, device=device)
+                batch_insert_offset[1:] = num_inserts_cumsum[:-1]
+                cond_emb_indices = batch_insert_offset[insert_positions[0]]
+                # Add position within each batch
+                batch_insert_positions = insertion_offsets[valid_inserts]
+                cond_emb_indices += batch_insert_positions
+
+                # Now insert cond_emb into tok_emb_new
+                tok_emb_new[insert_positions[0], insert_positions[1]] = cond_emb[cond_emb_indices]
+                # Position embeddings at insert positions remain zero (already initialized)
 
             # Update variables
             tok_emb = tok_emb_new
@@ -375,24 +438,57 @@ class Decifer(nn.Module):
 
             # Recompute positions_in_group
             last_start_positions = torch.where(start_mask == 1, positions, torch.tensor(0, device=device))
+            #print(last_start_positions)
             last_start_positions, _ = torch.cummax(last_start_positions, dim=1)
             positions_in_group = positions - last_start_positions
+            #print(positions_in_group)
 
             # Recompute attention_bias
             attention_mask = (group_ids.unsqueeze(2) == group_ids.unsqueeze(1)) & \
                              (positions.unsqueeze(2) >= positions.unsqueeze(1))
             attention_bias = torch.zeros_like(attention_mask, dtype=ptdtype)
             attention_bias.masked_fill_(~attention_mask, float('-inf'))
+            #print(attention_bias)
             # attention_bias is (B, T, T)
 
-            # Adjust targets if provided
-            if targets is not None:
-                idx_new = torch.full((b, max_new_t), Tokenizer().padding_id, dtype=idx.dtype, device=device)
-                targets_new = torch.full((b, max_new_t), -1, dtype=targets.dtype, device=device)  # Ignore index
-                idx_new[batch_idx, seq_idx] = idx[batch_idx, orig_idx]
-                targets_new[batch_idx, seq_idx] = targets[batch_idx, orig_idx]
-                idx = idx_new
-                targets = targets_new
+            if False:
+                # Adjust targets if provided
+                if targets is not None:
+                    idx_new = torch.full((b, max_new_t), Tokenizer().padding_id, dtype=idx.dtype, device=device)
+                    targets_new = torch.full((b, max_new_t), -1, dtype=targets.dtype, device=device)  # Ignore index
+                    idx_new[batch_idx, seq_idx] = idx[batch_idx, orig_idx]
+                    targets_new[batch_idx, seq_idx] = targets[batch_idx, orig_idx]
+                    idx = idx_new
+                    targets = targets_new
+            else:
+                # Adjust targets if provided
+                if targets is not None:
+                    # Initialize idx_new and targets_new with appropriate padding or ignore values
+                    idx_new = torch.full((b, max_new_t), Tokenizer().padding_id, dtype=idx.dtype, device=device)
+                    targets_new = torch.full((b, max_new_t), -1, dtype=targets.dtype, device=device)  # -1 indicates ignore index for loss computation
+
+                    # Create masks for valid positions
+                    valid_positions_mask = index_map >= 0  # Positions where original idx and targets should be placed
+
+                    # Prepare gather indices for idx and targets
+                    gather_indices = index_map.clamp(min=0)  # Replace -1 with 0 to prevent out-of-bounds
+                    gather_indices_expanded = gather_indices
+
+                    # Gather idx and targets using the indices
+                    idx_gathered = idx.gather(1, gather_indices_expanded)
+                    targets_gathered = targets.gather(1, gather_indices_expanded)
+
+                    # Mask out positions where index_map was -1 (since we used clamp)
+                    idx_gathered = idx_gathered * valid_positions_mask
+                    targets_gathered = targets_gathered * valid_positions_mask
+
+                    # Combine idx_new and gathered values
+                    idx_new = idx_new * (~valid_positions_mask) + idx_gathered
+                    targets_new = targets_new * (~valid_positions_mask) + targets_gathered
+
+                    # Update idx and targets
+                    idx = idx_new
+                    targets = targets_new
         else:
             positions_in_group = positions
             if self.config.boundary_masking:
@@ -413,6 +509,7 @@ class Decifer(nn.Module):
                                  (positions.unsqueeze(2) >= positions.unsqueeze(1))
                 attention_bias = torch.zeros_like(attention_mask, dtype=ptdtype)
                 attention_bias.masked_fill_(~attention_mask, float('-inf'))
+                #print(attention_bias)
                 # attention_bias is (B, T, T)
         
         #import matplotlib.pyplot as plt

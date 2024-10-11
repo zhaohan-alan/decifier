@@ -514,7 +514,6 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
             else:
                 cond_vec = None
             token_ids = model.generate_batched_reps(prompt, max_new_tokens=kwargs['max_new_tokens'], cond_vec=cond_vec, start_indices_batch=[[0]]).cpu().numpy()
-            print(token_ids)
             token_ids = [ids[ids != padding_id] for ids in token_ids]  # Remove padding tokens
         else:
             token_ids = [sample[sample != padding_id].cpu().numpy()]

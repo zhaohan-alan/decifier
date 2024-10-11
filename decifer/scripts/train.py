@@ -301,6 +301,15 @@ if __name__ == "__main__":
         print("Compiling the model (takes a ~minute)...", flush=True)
         unoptimized_model = model
         model = torch.compile(model)  # requires PyTorch 2.0
+    
+    #for group in optimizer.param_groups:
+    #    for param in group['params']:
+    #        if param is model.transformer.cond_embedding[0].weight:
+    #            print("Included")
+    #        if param is model.transformer.cond_embedding[2].weight:
+    #            print("Included")
+    #print(model.transformer.cond_embedding[0].weight.requires_grad)
+    #print(model.transformer.cond_embedding[2].weight.requires_grad)
 
     # Initialize a dictionary to keep data iterators per split
     data_iters = {}
@@ -346,14 +355,9 @@ if __name__ == "__main__":
             if conditioning:
                 cond_list.extend(cond_batch)
 
-        #print(len(sequences))
-        #print(len(cond_batch))
-        #print("GOOD")
-
         # Now pack sequences into batches without loops
         # Concatenate all sequences into one long tensor
         all_tokens = torch.cat(total_sequences)
-        #print("all tokens", all_tokens.shape)
 
         # Compute the lengths of sequences
         seq_lengths = torch.tensor([len(seq) for seq in total_sequences])
@@ -364,27 +368,20 @@ if __name__ == "__main__":
         # Calculate how many full blocks we can get from the concatenated tokens
         num_full_blocks = all_tokens.size(0) // block_size
         num_batches = min(batch_size, num_full_blocks)
-        #print("num_full_blocks", num_full_blocks)
-        #print("num_batches", num_batches)
 
         # Truncate the tokens to fit into an integer number of blocks
         total_tokens = all_tokens[:num_batches * block_size]
-        #print("len total tokens", total_tokens.shape)
 
         # Reshape the tokens into (num_batches, block_size)
         total_tokens = total_tokens.view(num_batches, block_size)
-        #print("total tokens", total_tokens.shape)
 
         # Create input (X) and target (Y) sequences
         X_batch = total_tokens[:, :-1]
-        #print("X batch shape", X_batch.shape)
         Y_batch = total_tokens[:, 1:]
 
         # Find start indices within each batch
         start_token_mask = X_batch == start_token_id
         start_indices = start_token_mask.nonzero(as_tuple=False)
-        #print("get_batch, start_indices", start_indices)
-        #print("start indices", start_indices)
 
         # Organize start indices per batch item
         start_indices_list = []
@@ -392,17 +389,12 @@ if __name__ == "__main__":
             indices = start_indices[start_indices[:, 0] == i][:, 1]
             start_indices_list.append(indices)
 
-        #print("start indices list", start_indices_list)
-
         # Handle conditioning data if required
         if conditioning and cond_list:
             # Collect conditioning data corresponding to sequences included
             index = torch.searchsorted(seq_cum_lengths, num_batches * block_size)
-            #print("index", index)
-            #print(len())
             cond_list = cond_list[:index+1]
             cond_batch = torch.stack(cond_list)
-            #print(cond_batch.shape)
         else:
             cond_batch = None
         
@@ -515,6 +507,7 @@ if __name__ == "__main__":
             if C.validate:
                 losses = estimate_loss()
 
+
                 # Metrics
                 metrics['train_losses'].append(losses['train'])
                 metrics['val_losses'].append(losses['val'])
@@ -565,7 +558,9 @@ if __name__ == "__main__":
         small_step_pbar = tqdm(desc='Accumulating losses...', total=C.gradient_accumulation_steps, leave=False, disable=not C.accumulative_pbar)
         for micro_step in range(C.gradient_accumulation_steps):
             with ctx:
+            
                 logits, loss = model(X, cond, Y, start_indices)
+                
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             X, Y, cond, start_indices = get_batch("train", C.condition_with_emb)
             # backward pass, with gradient scaling if training in fp16
@@ -579,6 +574,8 @@ if __name__ == "__main__":
         # step the optimizer and scaler if training in fp16
         scaler.step(optimizer)
         scaler.update()
+        #print(model.transformer.cond_embedding[0].weight.grad)
+        #print(model.transformer.cond_embedding[2].weight.grad)
         # flush the gradients as soon as we can, no need for this memory anymore
         optimizer.zero_grad(set_to_none=True)
 
