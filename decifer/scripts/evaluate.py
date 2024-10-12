@@ -435,7 +435,7 @@ def save_evaluation(eval_result, structure_name, repetition_num, eval_files_dir)
             os.remove(temp_filename)  # Clean up incomplete temporary file
         raise IOError(f"Failed to save evaluation for {structure_name} (rep {repetition_num}): {e}")
 
-def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, debug_max, override, condition, **kwargs):
+def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, debug_max, override, condition, zero_cond, **kwargs):
     """
     Processes a dataset, generates tokenized CIF prompts, and dispatches tasks to worker processes.
 
@@ -453,6 +453,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
         debug_max (int, optional): Maximum number of samples to process in debug mode.
         override (bool): If True, ignores check of exisiting files.
         condition (bool): If True, conditions the generations on the XRD patterns.
+        zero_cond (bool): If True, conditions are replaced by zero embeddings.
         **kwargs: Additional keyword arguments, including:
             - 'num_reps' (int): Number of repetitions for generating new sequences for each sample.
             - 'add_composition' (bool): Whether to include composition information in the prompt.
@@ -510,7 +511,9 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
         if prompt is not None:
             # Generate token sequences from the model's output
             if condition:
-                cond_vec = xrd_cont_iq.to(model.device)
+                cond_vec = xrd_cont_iq.to(model.device).unsqueeze(0)
+                if zero_cond:
+                    cond_vec = torch.zeros_like(cond_vec).to(model.device)
             else:
                 cond_vec = None
             token_ids = model.generate_batched_reps(prompt, max_new_tokens=kwargs['max_new_tokens'], cond_vec=cond_vec, start_indices_batch=[[0]]).cpu().numpy()
@@ -636,8 +639,9 @@ def main():
     parser.add_argument('--model-name', type=str, default='default_model', help='Name of the model.')
     parser.add_argument('--num-reps', type=int, default=1, help='Number of repetitions per sample.')
     parser.add_argument('--collect-only', action='store_true', help='Just collect eval files and combine.')
-    parser.add_argument('--override', action='store_true', help='Overrides the presence of existing files, effectively generating everything from scratch')
-    parser.add_argument('--condition', action='store_true', help='Flag to condition the generations on XRD')
+    parser.add_argument('--override', action='store_true', help='Overrides the presence of existing files, effectively generating everything from scratch.')
+    parser.add_argument('--condition', action='store_true', help='Flag to condition the generations on XRD.')
+    parser.add_argument('--zero-cond', action='store_true', help='Flag to replace condtioning with zero embeddings.')
 
     # Argument parsing for required and optional arguments
     parser.add_argument('--soap-r_cut', type=float, default=None, help='SOAP: Cutoff radius.')
@@ -771,6 +775,7 @@ def main():
             species=metadata['species'],
             override=args.override,
             condition=args.condition,
+            zero_cond=args.zero_cond,
         )
 
         if num_send > 0:
