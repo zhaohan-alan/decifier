@@ -1,4 +1,4 @@
-out_dir: 'conditioning'
+out_dir: 'deep_conditioning'
 eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200
 eval_iters_val: 200
