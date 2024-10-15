@@ -58,6 +58,10 @@ def escape_underscores(text):
     """Escape underscores in text to avoid LaTeX interpretation as subscript."""
     return text.replace("_", r"\_")
 
+def replace_underscores(text, replace_with=' '):
+    """Escape underscores in text to avoid LaTeX interpretation as subscript."""
+    return text.replace("_", replace_with)
+
 def latex_to_png(latex_code, output_filename='output.png', dpi=300):
     # Step 1: Write LaTeX code to a .tex file
     tex_filename = 'latex_input.tex'
@@ -88,7 +92,7 @@ def latex_to_png(latex_code, output_filename='output.png', dpi=300):
             if os.path.exists(f'latex_input.{ext}'):
                 os.remove(f'latex_input.{ext}')
 
-def main(eval_paths, output_path):
+def main(eval_paths, output_path, names=None):
     # Generate the validity comparison table
     results_df = dataset_validity_table(eval_paths)
 
@@ -104,7 +108,10 @@ def main(eval_paths, output_path):
     """
 
     # Add rows from DataFrame to the LaTeX string, bold the maximum values
-    for _, row in results_df.iterrows():
+    for idx, row in results_df.iterrows():
+        if names is not None and len(names) > idx:
+            row['Dataset'] = replace_underscores(names[idx])
+
         table_str += f"\\text{{{row['Dataset']}}} & "
 
         # Formula Validity
@@ -140,7 +147,8 @@ def main(eval_paths, output_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract and compare validity metrics for multiple datasets.")
     parser.add_argument('eval_paths', nargs='+', help='Paths to evaluation files (.eval).')
+    parser.add_argument('--names', nargs='+', help="Names for the datasets in order of appearance.")
     parser.add_argument('--output-path', type=str, help='Output path of the .png file.', default='similarity_table.png')
     
     args = parser.parse_args()
-    main(args.eval_paths, args.output_path)
+    main(args.eval_paths, args.output_path, args.names)
