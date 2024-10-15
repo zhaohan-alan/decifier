@@ -253,6 +253,8 @@ def visualize_samples(reduced_features_dict, df_filtered_dict, output_dir):
     for idx, descriptor in enumerate(descriptors):
         reduced_features = reduced_features_dict[descriptor]
         df_filtered = df_filtered_dict[descriptor]
+        norm = plt.Normalize(df_filtered['spacegroup_int'].min(), df_filtered['spacegroup_int'].max())
+        sm = plt.cm.ScalarMappable(cmap='viridis', norm=norm)
 
         # Create a DataFrame for plotting
         plot_df = pd.DataFrame({
@@ -267,35 +269,40 @@ def visualize_samples(reduced_features_dict, df_filtered_dict, output_dir):
         unique_datasets = plot_df['Dataset'].unique()
         markers = ['o', '^', 'D', 'v', 'P', '*', 's', 'h', '+']  # Extend as needed
 
-        plt.figure(figsize=(10, 8), dpi=300)
-        ax = plt.gca()
+
         for i, dataset in enumerate(unique_datasets):
+            plt.figure(figsize=(10, 8), dpi=300)
+            ax = plt.gca()
+
             idxs = plot_df['Dataset'] == dataset
+            point_colors = sm.to_rgba(plot_df['Spacegroup'])[idxs]
             ax.scatter(
                 plot_df.loc[idxs, 'PC1'],
                 plot_df.loc[idxs, 'PC2'],
                 marker=markers[i % len(markers)],
+                facecolor=point_colors,
                 edgecolor='k',
                 alpha=0.7,
                 label=dataset
             )
+            
+            filename = f"{descriptor}_{dataset}_PCA.png"
 
-        ax.set_title(f"{descriptor} Descriptor", fontsize=12)
-        ax.set_xlabel('Principal Component 1', fontsize=10)
-        ax.set_ylabel('Principal Component 2', fontsize=10)
-        ax.tick_params(axis='both', which='major', labelsize=8)
-        ax.grid(alpha=0.5)
+            ax.set_title(f"{descriptor} Descriptor", fontsize=12)
+            ax.set_xlabel('Principal Component 1', fontsize=10)
+            ax.set_ylabel('Principal Component 2', fontsize=10)
+            ax.tick_params(axis='both', which='major', labelsize=8)
+            ax.grid(alpha=0.5)
 
-        # Add legend
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        ax.legend(by_label.values(), by_label.keys(), title='Dataset', fontsize=8)
+            # Add legend
+            handles, labels = ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(), title='Dataset', fontsize=8)
 
-        # Save the plot
-        filename = f"{descriptor}_PCA.png"
-        save_path = os.path.join(output_dir, filename)
-        plt.savefig(save_path, bbox_inches='tight')
-        plt.close()
+            # Save the plot
+            save_path = os.path.join(output_dir, filename)
+            plt.savefig(save_path, bbox_inches='tight')
+            plt.close()
 
 def plot_histograms(stat_dict, output_dir):
     """
