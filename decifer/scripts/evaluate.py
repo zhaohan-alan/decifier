@@ -517,7 +517,11 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
             # Generate token sequences from the model's output
 
             if add_noise is not None:
-                xrd_cont_iq += torch.randn_like(xrd_cont_iq) * add_noise
+                if add_noise >= 1.0:
+                    xrd_cont_iq = torch.randn_like(xrd_cont_iq)
+                else:
+                    xrd_cont_iq += torch.randn_like(xrd_cont_iq) * add_noise
+                xrd_cont_iq /= torch.max(xrd_cont_iq)
                 xrd_cont_iq[xrd_cont_iq < 0] = 0.0
             if condition:
                 cond_vec = xrd_cont_iq.to(model.device).unsqueeze(0)
