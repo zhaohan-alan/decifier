@@ -379,7 +379,9 @@ def worker(input_queue, eval_files_dir, done_queue):
                     'dataset_name': task.get('dataset', 'UnknownDataset'),
                     'model_name': task.get('model', 'UnknownModel'),
                     'seq_len': len(task['token_ids']),
-                    'status': 'success'
+                    'original_cif': task.get('original_cif', None),
+                    'original_spacegroup': task.get('original_spacegroup', None),
+                    'status': 'success',
                 })
 
                 # Save the evaluation result to a file
@@ -474,7 +476,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
     """
     
     # Load the test dataset from the HDF5 file, including necessary features like CIF, XRD
-    test_dataset = DeciferDataset(h5_test_path, ["cif_name", "cif_tokenized", "xrd_cont.q", "xrd_cont.iq"])
+    test_dataset = DeciferDataset(h5_test_path, ["cif_name", "cif_tokenized", "xrd_cont.q", "xrd_cont.iq", "cif_string", "spacegroup"])
 
     # Set of existing evaluation files to avoid redundant processing
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl")))
@@ -494,7 +496,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
     padding_id = Tokenizer().padding_id
 
     # Iterate over the dataset samples
-    for i, (structure_name, sample, xrd_cont_q, xrd_cont_iq) in enumerate(test_dataset):
+    for i, (structure_name, sample, xrd_cont_q, xrd_cont_iq, original_cif, original_spacegroup) in enumerate(test_dataset):
         if i >= num_generations:
             break  # Stop processing if we've reached the generation limit (in debug mode)
         
@@ -541,6 +543,8 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
                 'species': kwargs['species'],
                 'dataset': kwargs['dataset_name'],
                 'model': kwargs['model_name'],
+                'original_cif': original_cif,
+                'original_spacegroup': original_spacegroup,
                 'debug': kwargs['debug'],
             }
             

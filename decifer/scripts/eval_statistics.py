@@ -43,6 +43,7 @@ def parse_arguments():
                         help='Method to use for outlier detection.')
     parser.add_argument('--outlier_thresh', type=float, default=2.0,
                         help='Threshold for outlier detection.')
+    parser.add_argument('--names', nargs='+')
     args = parser.parse_args()
     return args
 
@@ -426,7 +427,7 @@ def plot_histograms(stat_dict, output_dir):
     plt.savefig(save_path, bbox_inches='tight')
     plt.close()
 
-def plot_violinplots(stat_dict, output_dir):
+def plot_violinplots(stat_dict, output_dir, names=None):
     """
     Plot violinplots for different datasets.
 
@@ -478,7 +479,10 @@ def plot_violinplots(stat_dict, output_dir):
             'Dataset': dataset_labels
         })
 
-        sns.violinplot(x='Dataset', y=param, data=df, palette='pastel', hue='Dataset', linewidth=1.5, dodge=False, ax=axes[idx])
+        g = sns.violinplot(x='Dataset', y=param, data=df, palette='pastel', hue='Dataset', linewidth=1.5, dodge=False, ax=axes[idx])
+        if names is not None:
+            axes[idx].set_xticks(range(len(names)))
+            axes[idx].set_xticklabels(names)
         axes[idx].set_title(f'{param} Across Datasets')
         axes[idx].set_ylabel(param, fontsize=10)
         axes[idx].set_xlabel('Dataset', fontsize=10)
@@ -492,7 +496,7 @@ def plot_violinplots(stat_dict, output_dir):
     plt.savefig(save_path, bbox_inches='tight')
     plt.close()
 
-def plot_validity_stats(df, output_dir):
+def plot_validity_stats(df, output_dir, names=None):
     """
     Calculate validity statistics and create a bar plot.
 
@@ -507,10 +511,13 @@ def plot_validity_stats(df, output_dir):
     grouped = grouped.reset_index().melt(id_vars='dataset_name', var_name='validity_metric', value_name='percentage_valid')
 
     plt.figure(figsize=(10, 6))
-    sns.barplot(x='dataset_name', y='percentage_valid', hue='validity_metric', data=grouped)
+    g = sns.barplot(x='dataset_name', y='percentage_valid', hue='validity_metric', data=grouped)
     plt.title("Validity Metrics per Dataset (as % of valid entries)")
     plt.ylabel("Percentage of Valid Entries (%)")
     plt.xlabel("Dataset")
+    if names is not None:
+        g.set_xticks(range(len(names)))
+        g.set_xticklabels(names)
     plt.legend(title="Validity Metric", bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
@@ -560,10 +567,10 @@ def main():
     plot_histograms(stat_dict, args.output_dir)
 
     # Plot violinplots
-    plot_violinplots(stat_dict, args.output_dir)
+    plot_violinplots(stat_dict, args.output_dir, args.names)
 
     # Plot validity statistics
-    plot_validity_stats(df, args.output_dir)
+    plot_validity_stats(df, args.output_dir, args.names)
 
     # Extract individual and combined feature matrices
     feature_dict, df_filtered = get_feature_matrices(df)
