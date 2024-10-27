@@ -343,6 +343,25 @@ def main():
             avg_loss = total_loss / total_samples
             if (epoch+1) % args.save_every == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}')
+
+                # Save model
+                checkpoint = {
+                    "model": xrd_encoder.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "model_args": {
+                        "embedding_dim": args.embedding_dim,
+                        "proj_dim": args.proj_dim,
+                        "qmin": args.qmin,
+                        "qmax": args.qmax,
+                        "qstep": args.qstep,
+                        "fwhm_range": tuple(args.fwhm_range),
+                        "noise_range": tuple(args.noise_range),
+                        "intensity_scale_range": tuple(args.intensity_scale_range),
+                        "mask_prob": args.mask_prob,
+                    }
+                }
+                print(f"Saving checkpoint to {args.output_folder}...", flush=True)
+                torch.save(checkpoint, os.path.join(args.output_folder, "ckpt.pt"))
                 
         # After training, decide whether to save embeddings, generate t-SNE plot, or show augmentations
         if args.show_augmentations:
@@ -351,10 +370,6 @@ def main():
             # Generate t-SNE plot
             generate_tsne_plot(xrd_encoder, dataset, device, args)
         else:
-            # Save embeddings
-            embeddings_output_folder = os.path.join(args.output_folder, "embeddings")
-            os.makedirs(embeddings_output_folder, exist_ok=True)
-
             # Save model
             checkpoint = {
                 "model": xrd_encoder.state_dict(),
