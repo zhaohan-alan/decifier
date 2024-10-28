@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+import sys
+sys.path.append("./")
+
 import argparse
 import os
 import gzip
@@ -9,7 +12,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 import numpy as np
-from decifer import DeciferDataset
 from pytorch_metric_learning.losses import NTXentLoss
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
@@ -21,6 +23,7 @@ from pymatgen.io.cif import CifParser
 from decifer import (
     space_group_symbol_to_number,
     extract_space_group_symbol,
+    DeciferDataset,
 )
 
 # Conditional imports for backwards compatibility with older pymatgen versions

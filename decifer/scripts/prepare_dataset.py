@@ -28,6 +28,8 @@ from multiprocessing import Pool, cpu_count, TimeoutError, Manager
 import numpy as np
 import time
 import random
+import torch
+import torch.nn as nn
 
 import h5py
 import gzip
@@ -48,20 +50,236 @@ from decifer import (
     replace_data_formula_with_nonreduced_formula,
     round_numbers,
     add_atomic_props_block,
+    #CLEncoder,
 )
 
 import warnings
 warnings.filterwarnings("ignore")
 
-def init_worker(log_queue):
+# Define the augmentation function for a batch of CIF strings
+def augmentation(
+    data,
+    qmin,
+    qmax,
+    qstep,
+    fwhm_range,
+    noise_range,
+    intensity_scale_range,
+    mask_prob
+):
+    # Define the continuous Q grid
+    q_continuous = np.arange(qmin, qmax, qstep)
+    num_q_points = len(q_continuous)
+    
+    augmented_patterns = []
+        
+    for q, iq in zip(*data):
+        # Initialize intensities_continuous
+        intensities_continuous = np.zeros_like(q_continuous)
+        
+        # Sample a random FWHM from fwhm_range and convert to standard deviation
+        fwhm = np.random.uniform(*fwhm_range)
+        sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+        
+        # Apply Gaussian broadening to the peaks
+        for q_peak, intensity in zip(q, iq):
+            if q_peak != 0:
+                gaussian_broadening = intensity * np.exp(-0.5 * ((q_continuous - q_peak) / sigma) ** 2)
+                intensities_continuous += gaussian_broadening
+        
+        # Normalize the continuous intensities
+        intensities_continuous /= (np.max(intensities_continuous) + 1e-16)
+        
+        # Random scaling of intensities
+        intensity_scale = np.random.uniform(*intensity_scale_range)
+        xrd_scaled = intensities_continuous * intensity_scale
+        
+        # Random noise addition
+        noise_scale = np.random.uniform(*noise_range)
+        background = np.random.randn(len(xrd_scaled)) * noise_scale
+        xrd_augmented = xrd_scaled + background
+        
+        # Random masking
+        mask = np.random.rand(len(xrd_augmented)) > mask_prob
+        xrd_augmented = xrd_augmented * mask
+        
+        # Clipping
+        xrd_augmented = np.clip(xrd_augmented, a_min=0.0, a_max=None)
+        
+        # Append to list
+        augmented_patterns.append(xrd_augmented.astype(np.float32))
+        
+    # Stack all augmented patterns into a numpy array
+    xrd_augmented_batch = np.stack(augmented_patterns)
+    
+    # Convert to torch tensor
+    xrd_augmented_batch = torch.from_numpy(xrd_augmented_batch)
+    
+    return xrd_augmented_batch
+
+# Define a function to generate XRD patterns without augmentation for inference
+def generate_xrd_patterns(
+    data,
+    qmin=0.0,
+    qmax=10.0,
+    qstep=0.01,
+    fwhm=0.01  # A default small FWHM value for consistent broadening
+):
+    
+    # Define the continuous Q grid
+    q_continuous = np.arange(qmin, qmax, qstep)
+    num_q_points = len(q_continuous)
+    
+    xrd_patterns = []
+    
+    for q, iq in zip(*data):
+        # Initialize intensities_continuous
+        intensities_continuous = np.zeros_like(q_continuous)
+        
+        # Convert FWHM to standard deviation
+        sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+        
+        # Apply Gaussian broadening to the peaks
+        for q_peak, intensity in zip(q, iq):
+            if q_peak != 0:
+                gaussian_broadening = intensity * np.exp(-0.5 * ((q_continuous - q_peak) / sigma) ** 2)
+                intensities_continuous += gaussian_broadening
+        
+        # Normalize the continuous intensities
+        intensities_continuous /= (np.max(intensities_continuous) + 1e-16)
+        
+        # Append to list
+        xrd_patterns.append(intensities_continuous.astype(np.float32))
+    
+    # Stack all patterns into a numpy array
+    xrd_batch = np.stack(xrd_patterns)
+    
+    # Convert to torch tensor
+    xrd_batch = torch.from_numpy(xrd_batch)
+    
+    return xrd_batch
+
+# Model definitions
+class CLEncoder(nn.Module):
+    def __init__(
+        self, 
+        embedding_dim, 
+        proj_dim, 
+        qmin,
+        qmax,
+        qstep,
+        fwhm_range,
+        noise_range,
+        intensity_scale_range, 
+        mask_prob
+    ):
+        super(CLEncoder, self).__init__()
+        # XRD parameters
+        self.qmin = qmin
+        self.qmax = qmax
+        self.qstep = qstep
+
+        # Input dim
+        self.qs = np.arange(qmin, qmax, qstep)
+        input_dim = len(self.qs)
+
+        # Encoder head
+        self.enc = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, embedding_dim)
+        )
+        
+        # Projection head
+        self.proj = nn.Sequential(
+            nn.Linear(embedding_dim, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, proj_dim)
+        )
+        # Augmentation parameters
+        self.intensity_scale_range = intensity_scale_range
+        self.mask_prob = mask_prob
+        self.fwhm_range = fwhm_range
+        self.noise_range = noise_range
+
+        self.aug_kwargs = {
+            'intensity_scale_range': intensity_scale_range,
+            'mask_prob': mask_prob,
+            'qmin': qmin,
+            'qmax': qmax,
+            'qstep': qstep,
+            'fwhm_range': fwhm_range,
+            'noise_range': noise_range,
+        }
+
+    def forward(self, data, train=True):
+        if train:
+            # Get two augmentations of the same batch
+            augm1 = augmentation(data, **self.aug_kwargs).to(next(self.enc.parameters()).device)
+            augm2 = augmentation(data, **self.aug_kwargs).to(next(self.enc.parameters()).device)
+        
+            # Extract encoder embeddings
+            h_1 = self.enc(augm1)
+            h_2 = self.enc(augm2)
+
+            # Extract low-dimensional embeddings
+            h_1_latent = self.proj(h_1)
+            h_2_latent = self.proj(h_2)
+            return h_1, h_2, h_1_latent, h_2_latent
+        else:
+            # Generate XRD patterns without augmentation
+            xrd_batch = generate_xrd_patterns(
+                data,
+                qmin=self.qmin,
+                qmax=self.qmax,
+                qstep=self.qstep,
+                fwhm=0.01  # Use a default small FWHM for consistent broadening
+            ).to(next(self.enc.parameters()).device)
+
+            # Extract encoder embeddings
+            h = self.enc(xrd_batch)
+            h_latent = self.proj(h)
+            return h, h_latent
+
+def init_worker(log_queue=None, model_path=None, device='cpu'):
     """
-    Initializes each worker process with a queue-based logger.
+    Initializes each worker process with a queue-based logger and loads the model if provided.
     This will be called when each worker starts.
     """
-    queue_handler = handlers.QueueHandler(log_queue)
-    logger = logging.getLogger()
-    logger.addHandler(queue_handler)
-    logger.setLevel(logging.ERROR)
+    global xrd_encoder
+
+    # Initialize logger
+    if log_queue:
+        queue_handler = handlers.QueueHandler(log_queue)
+        logger = logging.getLogger()
+        logger.addHandler(queue_handler)
+        logger.setLevel(logging.ERROR)
+    else:
+        logger = logging.getLogger()
+        logger.setLevel(logging.ERROR)
+
+    if model_path:
+        # Load the model
+        checkpoint = torch.load(model_path, map_location=device)
+        model_args = checkpoint['model_args']
+
+        # Initialize the encoder model with the model args from checkpoint
+        xrd_encoder = CLEncoder(
+            embedding_dim=model_args["embedding_dim"],
+            proj_dim=model_args["proj_dim"],
+            qmin=model_args["qmin"],
+            qmax=model_args["qmax"],
+            qstep=model_args["qstep"],
+            fwhm_range=model_args["fwhm_range"],
+            noise_range=model_args["noise_range"],
+            intensity_scale_range=model_args["intensity_scale_range"],
+            mask_prob=model_args["mask_prob"]
+        )
+
+        # Load model state dict
+        xrd_encoder.load_state_dict(checkpoint["model"])
+        xrd_encoder.to(device)
+        xrd_encoder.eval()
 
 def log_listener(queue, log_dir):
     """
@@ -180,8 +398,8 @@ def run_subtasks(
             except NameError:
                 print(f"Could not locate metadata with key: {key} in {metadata_path}")
                 pass
-    
-    # Check for exisiting files
+
+    # Check for existing files
     existing_files = set(os.path.basename(f) for f in glob(os.path.join(to_dir, "*.pkl.gz")))
 
     # Collect tasks
@@ -204,35 +422,55 @@ def run_subtasks(
     pbar.close()
 
     if not tasks:
-        print(f"All task have already been executed for {save_to}, skipping...", end='\n')
+        print(f"All tasks have already been executed for {save_to}, skipping...", end='\n')
     else:
-        # Keep track of optional worker metadata
-        worker_metadata = {}
-        # Create a queue for logging and start the logging process
+        # Initialize logger
         log_queue = mp.Queue()
         listener = log_listener(log_queue, to_dir)
 
-        # Parallel processing of CIF files using multiprocessing
-        with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-            results_iterator = pool.imap_unordered(worker_function, tasks)
-            
-            for _ in tqdm(range(len(tasks)), total=len(tasks), desc="Executing tasks...", leave=False):
+        if worker_function == cl_emb_worker:
+            # Load the model once
+            model_path = task_kwargs_dict['model_path']
+            device = task_kwargs_dict.get('device', 'cpu')
+            init_worker(log_queue, model_path, device)
+
+            # Process tasks sequentially
+            for task in tqdm(tasks, desc="Executing tasks...", leave=False):
                 try:
-                    results_iterator.next(timeout = 60)
-                except TimeoutError as e:
+                    worker_function(task)
+                except Exception as e:
+                    if debug:
+                        print(f"Error processing task {task}: {e}")
+                    logger = logging.getLogger()
+                    logger.exception(f"Exception in worker function for task {task}, error:\n {e}\n\n")
                     continue
 
-        # Stop log listener and flush
-        listener.stop()
-        logging.shutdown()
+            # Stop log listener and flush
+            listener.stop()
+            logging.shutdown()
+        else:
+            # Original code for other worker functions
+            # Parallel processing of CIF files using multiprocessing
+            with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+                results_iterator = pool.imap_unordered(worker_function, tasks)
+
+                for _ in tqdm(range(len(tasks)), total=len(tasks), desc="Executing tasks...", leave=False):
+                    try:
+                        results_iterator.next(timeout=60)
+                    except TimeoutError as e:
+                        continue
+
+            # Stop log listener and flush
+            listener.stop()
+            logging.shutdown()
 
     n_files = len(paths)
     n_successful_files = len(glob(os.path.join(to_dir, '*.pkl.gz')))
     print(f"Reduction in dataset: {n_files} samples --> {n_successful_files} samples")
-    
+
     additional_metadata = {save_to: task_kwargs_dict}
     save_metadata(additional_metadata, root)
-    
+
     # Free up memory
     del tasks
     gc.collect()
@@ -432,6 +670,48 @@ def xrd_worker(args):
             print(f"Error processing {cif_name}: {e}")
         logger = logging.getLogger()
         logger.exception(f"Exception in worker function with xrd calculation for CIF with name {cif_name}, with error:\n {e}\n\n")
+
+def cl_emb_worker(args):
+
+    # Extract arguments
+    from_path, task_dict, debug, to_dir = args
+
+    # Open pkl and extract the discrete XRD patterns
+    with gzip.open(from_path, "rb") as f:
+        data = pickle.load(f)
+    cif_name = data['cif_name']
+    xrd_disc_q = data['xrd_disc']['q']
+    xrd_disc_iq = data['xrd_disc']['iq']
+
+    try:
+        # Access the global model
+        global xrd_encoder
+        device = task_dict.get('device', 'cpu')
+
+        # Prepare data
+        batch_q = [xrd_disc_q]
+        batch_iq = [xrd_disc_iq]
+
+        data_input = (batch_q, batch_iq)
+
+        # Generate embeddings
+        with torch.no_grad():
+            h, _ = xrd_encoder(data_input, train=False)
+            h = h.cpu().numpy()
+
+        # Save output to pkl.gz file
+        output_dict = {
+            'cif_name': cif_name,
+            'xrd_cl_emb': h[0],  # h is of shape (1, embedding_dim)
+        }
+        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
+        safe_pkl_gz(output_dict, output_path)
+
+    except Exception as e:
+        if debug:
+            print(f"Error processing {cif_name}: {e}")
+        logger = logging.getLogger()
+        logger.exception(f"Exception in worker function with CL embedding for CIF {cif_name}, error:\n {e}\n\n")
 
 def cif_tokenizer_worker(args):
     
@@ -639,7 +919,6 @@ def save_h5(h5_path, cif_names, data_types):
                     dset.resize(current_size + 1, axis=0)
                     # Assign data based on type
                     if isinstance(data_value, np.ndarray):
-                        print(data_value)
                         dset[current_size] = data_value
                     elif isinstance(data_value, (str, int, float)):
                         dset[current_size] = data_value
@@ -707,6 +986,11 @@ def serialize(root, workers, seed):
     xrd_paths = glob(os.path.join(xrd_dir, "*.pkl.gz"))
     if len(xrd_paths) > 0:
         data_types.append({'dir': xrd_dir, 'keys': ['xrd_disc', 'xrd_cont']})
+    
+    cl_dir = os.path.join(root, "cl_embeddings")
+    cl_paths = glob(os.path.join(cl_dir, "*.pkl.gz"))
+    if len(cl_paths) > 0:
+        data_types.append({'dir': cl_dir, 'keys': ['xrd_cl_emb']})
 
     cif_token_dir = os.path.join(root, "cif_tokenized")
     cif_token_paths = glob(os.path.join(cif_token_dir, "*.pkl.gz"))
@@ -743,12 +1027,17 @@ def collect_data(root, get_from, key, workers=cpu_count() - 1):
     output = []
 
     # Parallel process retrieving the results
-    with Pool(processes=workers) as pool:
+    ctx = mp.get_context('spawn')
+    with ctx.Pool(processes=workers) as pool:
         key_data = list(tqdm(pool.imap(retrieve_worker, args), total=len(paths), desc=f"Retrieving {key} from {get_from}...", leave=False))
         
     return key_data
 
 if __name__ == "__main__":
+
+    import multiprocessing as mp
+    mp.set_start_method('spawn', force=True)
+
     parser = argparse.ArgumentParser(description="Prepare custom CIF files and save to a tar.gz file.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--data-dir", type=str, help="Path to the outer data directory", required=True)
@@ -769,6 +1058,9 @@ if __name__ == "__main__":
     parser.add_argument("--workers", help="Number of workers for each processing step", type=int, default=0)
     parser.add_argument("--raw_from_gzip", help="Whether raw CIFs come packages in gzip pkl", action="store_true")
     parser.add_argument("--save-species-to-metadata", help="Extraordinary save of species to metadata", action="store_true")
+
+    parser.add_argument("--cl_emb", help="Generate contrastive learning embeddings", action="store_true")
+    parser.add_argument("--model_path", type=str, help="Path to the trained model checkpoint for generating embeddings")
 
     args = parser.parse_args()
 
@@ -873,6 +1165,24 @@ if __name__ == "__main__":
             save_to = "xrd",
             task_kwargs_dict = xrd_dict,
             announcement = "XRD CALCULATIONS",
+            debug = True,
+            workers = args.workers,
+        )
+
+    if args.cl_emb:
+        if not args.model_path:
+            parser.error("--model_path is required when --cl_emb is specified.")
+        cl_emb_dict = {
+            'model_path': args.model_path,  # Path to your trained model checkpoint
+            'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        }
+        run_subtasks(
+            root = args.data_dir,
+            worker_function = cl_emb_worker,
+            get_from = "xrd",
+            save_to = "cl_embeddings",
+            task_kwargs_dict = cl_emb_dict,
+            announcement = "GENERATING CL EMBEDDINGS",
             debug = True,
             workers = args.workers,
         )

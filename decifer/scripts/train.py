@@ -69,7 +69,8 @@ class TrainConfig:
     n_embd: int = 768
     dropout: float = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
     bias: bool = False  # do we use bias inside LayerNorm and Linear layers?
-    condition_with_emb: bool = False
+    condition_with_mlp_emb: bool = False
+    condition_with_cl_emb: bool = False
     boundary_masking: bool = True
 
     # AdamW optimizer
@@ -159,11 +160,25 @@ if __name__ == "__main__":
                 batch_data.append(field_data)
         return tuple(batch_data)
 
+    # Conditioning
+    condition = C.condition_with_mlp_emb or C.condition_with_cl_emb
+    if C.condition_with_cl_emb:
+        dataset_fields = ["cif_tokenized", "xrd_cl_emb"]
+        condition = True
+    elif C.condition_with_mlp_emb:
+        dataset_fields = ["cif_tokenized", "xrd_cont.iq"]
+        condition = True
+    else:
+        dataset_fields = ["cif_tokenized"]
+        condition = False
+
     # Initialise datasets/loaders 
-    # TODO Depending on the task, load different labels
-    train_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/train.h5"), ["cif_tokenized", "xrd_cont.iq"])
-    val_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/val.h5"), ["cif_tokenized", "xrd_cont.iq"])
-    test_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/test.h5"), ["cif_tokenized", "xrd_cont.iq"])
+    train_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/train.h5"), dataset_fields)
+    val_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/val.h5"), dataset_fields)
+    test_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/test.h5"), dataset_fields)
+        
+    if C.condition_with_cl_emb or C.condition_with_mlp_emb:
+        C.cond_size = next(iter(train_dataset))[1].shape[-1]
 
     # Random batching sampler, train
     train_sampler = SubsetRandomSampler(range(len(train_dataset)))
@@ -187,9 +202,6 @@ if __name__ == "__main__":
         "test": test_dataloader,
     }
 
-    # TEMP (TODO get cond size from metadata)
-    C.cond_size = next(iter(train_dataset))[1].shape[-1]
-
     # Initialize
     iter_num = 0
     best_val_loss = float('inf')
@@ -210,7 +222,8 @@ if __name__ == "__main__":
         dropout=C.dropout,
         use_lora=C.use_lora,
         lora_rank=C.lora_rank,
-        condition_with_emb=C.condition_with_emb,
+        condition_with_mlp_emb=C.condition_with_mlp_emb,
+        condition_with_cl_emb=C.condition_with_cl_emb,
         boundary_masking=C.boundary_masking,
     )
 
@@ -302,15 +315,6 @@ if __name__ == "__main__":
         unoptimized_model = model
         model = torch.compile(model)  # requires PyTorch 2.0
     
-    #for group in optimizer.param_groups:
-    #    for param in group['params']:
-    #        if param is model.transformer.cond_embedding[0].weight:
-    #            print("Included")
-    #        if param is model.transformer.cond_embedding[2].weight:
-    #            print("Included")
-    #print(model.transformer.cond_embedding[0].weight.requires_grad)
-    #print(model.transformer.cond_embedding[2].weight.requires_grad)
-
     # Initialize a dictionary to keep data iterators per split
     data_iters = {}
 
@@ -463,7 +467,7 @@ if __name__ == "__main__":
         for split, eval_iters in [("train", C.eval_iters_train), ("val", C.eval_iters_val)]:
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                X, Y, cond, start_indices = get_batch(split, C.condition_with_emb)
+                X, Y, cond, start_indices = get_batch(split, condition)
                 with ctx:
                     logits, loss = model(X, cond, Y, start_indices)
                 losses[k] = loss.item()
@@ -492,7 +496,7 @@ if __name__ == "__main__":
         get_batch = get_batch_padded
 
     # training loop
-    X, Y, cond, start_indices = get_batch("train", C.condition_with_emb)
+    X, Y, cond, start_indices = get_batch("train", condition)
     t0 = time.time()
     local_iter_num = 0  # number of iterations in the lifetime of this process
     while True:
@@ -562,7 +566,7 @@ if __name__ == "__main__":
                 logits, loss = model(X, cond, Y, start_indices)
                 
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            X, Y, cond, start_indices = get_batch("train", C.condition_with_emb)
+            X, Y, cond, start_indices = get_batch("train", condition)
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
             small_step_pbar.update(1)

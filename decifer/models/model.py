@@ -46,7 +46,8 @@ class DeciferConfig:
     use_lora: bool = False
     lora_mlp: bool = False
     lora_proj: bool = False
-    condition_with_emb: bool = False
+    condition_with_mlp_emb: bool = False
+    condition_with_cl_emb: bool = False
     boundary_masking: bool = True
     cond_hidden_size: int = 256
 
@@ -223,17 +224,24 @@ class Decifer(nn.Module):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
-        if config.condition_with_emb:
+        if config.condition_with_mlp_emb:
             assert config.cond_size is not None
         self.config = config
 
-        self.transformer = nn.ModuleDict(dict(
-            cond_embedding=nn.Sequential(
+        # Condtional embedding: either using straight MLP or direct CL encoding
+        if config.condition_with_cl_emb:
+            cond_embedding = nn.Identity()
+        elif config.condition_with_mlp_emb:
+            cond_embedding = nn.Sequential(
                 nn.Linear(config.cond_size, config.cond_hidden_size),
                 nn.ReLU(),
                 nn.Linear(config.cond_hidden_size, config.n_embd),
+            )
+        else:
+            cond_embedding = None
 
-            ) if config.condition_with_emb else None,
+        self.transformer = nn.ModuleDict(dict(
+            cond_embedding=cond_embedding,
             wte=nn.Embedding(config.vocab_size, config.n_embd),
             wpe=nn.Embedding(config.block_size, config.n_embd),
             drop=nn.Dropout(config.dropout),
@@ -295,7 +303,7 @@ class Decifer(nn.Module):
         # Initialize variables
         attention_bias = None
 
-        if self.config.condition_with_emb:
+        if self.config.condition_with_mlp_emb or self.config.condition_with_cl_emb:
             # Convert start_indices_batch into a padded tensor
             max_num_inserts = max(len(s) for s in start_indices_batch)
             start_indices_padded = torch.full((b, max_num_inserts), t, dtype=torch.long, device=device)  # Fill with t (invalid index)
