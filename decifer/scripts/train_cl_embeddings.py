@@ -236,6 +236,116 @@ def collate_fn(batch):
     # Return
     return batch_q, batch_iq, cif_names, spacegroup_symbols
 
+def generate_tsne_plot(xrd_encoder, dataset, device, args):
+    import matplotlib.pyplot as plt
+    from sklearn.manifold import TSNE
+
+    xrd_encoder.eval()
+
+    # Choose a subset of the dataset for visualization
+    num_samples = min(len(dataset), args.num_samples_tsne)
+    indices = np.random.choice(len(dataset), num_samples, replace=False)
+    subset_dataset = Subset(dataset, indices)
+    data_loader = DataLoader(subset_dataset, batch_size=num_samples, shuffle=False, collate_fn=collate_fn)
+
+    # Collect embeddings and labels
+    all_embeddings = []
+    all_labels = []
+
+    with torch.no_grad():
+        for batch in tqdm(data_loader, desc='Generating t-SNE plot'):
+            *data, cif_names, spacegroup_symbols = batch
+                
+            for _ in range(args.num_augmentations):
+
+                # Generate augmented embeddings
+                h, _, _, _ = xrd_encoder(data, train=True)  # Get encoder embeddings h
+                h = h.cpu().numpy()
+
+                all_embeddings.extend(h)
+                all_labels.extend(spacegroup_symbols)
+                
+
+    all_embeddings = np.array(all_embeddings)
+    all_labels = np.array(all_labels)
+
+    # Perform t-SNE
+    tsne = TSNE(n_components=2, perplexity=args.tsne_perplexity, random_state=42)
+    embeddings_2d = tsne.fit_transform(all_embeddings)
+
+    # Plotting
+    plt.figure(figsize=(12, 8))
+    unique_labels = np.unique(all_labels)
+    num_classes = len(unique_labels)
+    max_colors = 20  # Maximum colors in 'tab20' colormap
+    if num_classes > max_colors:
+        print(f"Number of classes ({num_classes}) exceeds maximum colors ({max_colors}). Some colors will be reused.")
+    colors = plt.cm.get_cmap('tab20', max_colors)
+
+    markers = ['o', '^', 'D', 's', 'v', '<', '>', 'p', '*', 'h', 'H', '+', 'x', 'd', '|', '_', '.', ',', '1', '2', '3', '4']
+    if num_classes > len(markers):
+        print(f"Number of classes ({num_classes}) exceeds number of markers ({len(markers)}). Some markers will be reused.")
+
+    for idx, label in enumerate(unique_labels):
+        idxs = np.where(all_labels == label)
+        plt.scatter(embeddings_2d[idxs, 0], embeddings_2d[idxs, 1], label=label, alpha=0.7,
+                    color=colors(idx % max_colors), marker=markers[idx % len(markers)])
+
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize='small')
+    plt.title('t-SNE plot of embeddings with multiple augmentations, colored by Spacegroup')
+    plt.xlabel('Dimension 1')
+    plt.ylabel('Dimension 2')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+def show_augmentations(xrd_encoder, dataset, args):
+    import matplotlib.pyplot as plt
+
+    # Choose a few CIFs to show
+    num_cifs_to_show = args.num_cifs_to_show
+    indices = np.random.choice(len(dataset), num_cifs_to_show, replace=False)
+    subset_dataset = Subset(dataset, indices)
+    data_loader = DataLoader(subset_dataset, batch_size=num_cifs_to_show, shuffle=False, collate_fn=collate_fn)
+
+    xrd_encoder.eval()
+
+    with torch.no_grad():
+        for batch in data_loader:
+            *data, cif_names, spacegroup_symbols = batch
+
+            # Generate original XRD patterns
+            original_patterns = generate_xrd_patterns(
+                data,
+                qmin=xrd_encoder.qmin,
+                qmax=xrd_encoder.qmax,
+                qstep=xrd_encoder.qstep,
+                fwhm=0.01  # Small FWHM for clear peaks
+            ).cpu().numpy()
+
+            # Generate augmented XRD patterns
+            augmented_patterns = augmentation(
+                data,
+                **xrd_encoder.aug_kwargs
+            ).cpu().numpy()
+
+            q_values = xrd_encoder.qs
+
+            # Plotting
+            for i in range(num_cifs_to_show):
+                plt.figure(figsize=(12, 6))
+                plt.plot(q_values, original_patterns[i], label='Original', linewidth=2)
+                plt.plot(q_values, augmented_patterns[i], label='Augmented', linewidth=1)
+                plt.title(f'Original vs Augmented XRD Pattern for CIF: {cif_names[i]}')
+                plt.xlabel('Q (1/Å)')
+                plt.ylabel('Intensity (a.u.)')
+                plt.legend()
+                plt.grid(True)
+                plt.tight_layout()
+                plt.show()
+
+    print("Displayed original and augmented XRD patterns for selected CIFs.")
+
 def main():
     parser = argparse.ArgumentParser(description='Train a contrastive learning encoder and save embeddings.')
 
@@ -263,22 +373,36 @@ def main():
     parser.add_argument('--num_samples_tsne', type=int, default=10, help='Number of CIF samples to use in t-SNE plot.')
     parser.add_argument('--show_augmentations', action='store_true', help='If set, plot original and augmented XRD patterns for selected CIFs.')
     parser.add_argument('--num_cifs_to_show', type=int, default=3, help='Number of CIFs to show in augmentation comparison.')
+    parser.add_argument('--no_train', action='store_true', help='If set, skip training and use an untrained model to generate embeddings.')
+    parser.add_argument('--save_embeddings', action='store_true', help='If set, generate and save embeddings from model (if set).')
 
     args = parser.parse_args()
     
     # Set up device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    if args.load_model is None:
+    # Load dataset
+    dataset = DeciferDataset(args.data_file, ["xrd_disc.q", "xrd_disc.iq", "cif_name", "spacegroup"])
+        
+    # Make directory
+    os.makedirs(args.output_folder, exist_ok=True)
 
-        # Initialize model parameters
-        embedding_dim = args.embedding_dim
-        proj_dim = args.proj_dim
+    if args.load_model:
 
+        checkpoint = torch.load(args.load_model)
+        model_args = checkpoint["model_args"]
         # Initialize the encoder model
         xrd_encoder = CLEncoder(
-            embedding_dim, 
-            proj_dim,
+            **model_args,
+        )
+        xrd_encoder.to(device)
+
+        xrd_encoder.load_state_dict(checkpoint["model"])
+    elif not args.no_train:
+        # Proceed with training
+        xrd_encoder = CLEncoder(
+            embedding_dim=args.embedding_dim,
+            proj_dim=args.proj_dim,
             qmin=args.qmin,
             qmax=args.qmax,
             qstep=args.qstep,
@@ -292,10 +416,6 @@ def main():
         # Optimizer and loss function
         optimizer = optim.Adam(xrd_encoder.parameters(), lr=args.learning_rate)
         loss_function = NTXentLoss(temperature=args.temperature)
-
-        # Load dataset
-        dataset = DeciferDataset(args.data_file, ["xrd_disc.q", "xrd_disc.iq", "cif_name", "spacegroup"])
-
 
         # Create a subset of the dataset if specified
         if args.subset_size is not None and args.subset_size < len(dataset):
@@ -363,199 +483,52 @@ def main():
                 print(f"Saving checkpoint to {args.output_folder}...", flush=True)
                 torch.save(checkpoint, os.path.join(args.output_folder, "ckpt.pt"))
                 
-        # After training, decide whether to save embeddings, generate t-SNE plot, or show augmentations
-        if args.show_augmentations:
-            show_augmentations(xrd_encoder, dataset, args)
-        elif args.tsne_plot:
-            # Generate t-SNE plot
-            generate_tsne_plot(xrd_encoder, dataset, device, args)
-        else:
-            # Save model
-            checkpoint = {
-                "model": xrd_encoder.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "model_args": {
-                    "embedding_dim": args.embedding_dim,
-                    "proj_dim": args.proj_dim,
-                    "qmin": args.qmin,
-                    "qmax": args.qmax,
-                    "qstep": args.qstep,
-                    "fwhm_range": tuple(args.fwhm_range),
-                    "noise_range": tuple(args.noise_range),
-                    "intensity_scale_range": tuple(args.intensity_scale_range),
-                    "mask_prob": args.mask_prob,
-                }
-            }
-            print(f"Saving checkpoint to {args.output_folder}...", flush=True)
-            torch.save(checkpoint, os.path.join(args.output_folder, "ckpt.pt"))
     else:
-        # Load the model
-        checkpoint = torch.load(args.load_model)
-        model_args = checkpoint["model_args"]
-
-        # Initialize the encoder model with the model args from checkpoint
+        # Proceed with training
         xrd_encoder = CLEncoder(
-            embedding_dim=model_args["embedding_dim"],
-            proj_dim=model_args["proj_dim"],
-            qmin=model_args["qmin"],
-            qmax=model_args["qmax"],
-            qstep=model_args["qstep"],
-            fwhm_range=model_args["fwhm_range"],
-            noise_range=model_args["noise_range"],
-            intensity_scale_range=model_args["intensity_scale_range"],
-            mask_prob=model_args["mask_prob"]
+            embedding_dim=args.embedding_dim,
+            proj_dim=args.proj_dim,
+            qmin=args.qmin,
+            qmax=args.qmax,
+            qstep=args.qstep,
+            fwhm_range=tuple(args.fwhm_range),
+            noise_range=tuple(args.noise_range),
+            intensity_scale_range=tuple(args.intensity_scale_range),
+            mask_prob=args.mask_prob
         )
+        xrd_encoder.to(device)
+        # If --no_train is set and no model is loaded, we'll use the untrained model
+        print("Using untrained model to generate embeddings.")
 
-        # Load model state dict
-        xrd_encoder.load_state_dict(checkpoint["model"])
-        xrd_encoder.to(device)  # Send to device
+    # Decide whether to generate embeddings, t-SNE plot, or show augmentations
+    if args.show_augmentations:
+        show_augmentations(xrd_encoder, dataset, args)
+    elif args.tsne_plot:
+        generate_tsne_plot(xrd_encoder, dataset, device, args)
+    elif args.save_embeddings:
+        # Save embeddings
+        embeddings_output_folder = os.path.join(args.output_folder, "embeddings")
+        os.makedirs(embeddings_output_folder, exist_ok=True)
 
-        # Load dataset
-        dataset = DeciferDataset(args.data_file, ["xrd_disc.q", "xrd_disc.iq", "cif_name", "spacegroup"])
+        # Embed conditioning
+        xrd_encoder.eval()
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
 
-        # Decide whether to generate t-SNE plot or show augmentations
-        if args.show_augmentations:
-            show_augmentations(xrd_encoder, dataset, args)
-        elif args.tsne_plot:
-            generate_tsne_plot(xrd_encoder, dataset, device, args)
-        else:
-            # Save embeddings
-            embeddings_output_folder = os.path.join(args.output_folder, "embeddings")
-            os.makedirs(embeddings_output_folder, exist_ok=True)
-
-            # Embed conditioning
-            xrd_encoder.eval()
-            data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
-
-            with torch.no_grad():
-                for batch in tqdm(data_loader, desc='Saving embeddings'):
-                    *data, cif_names, spacegroup_symbols = batch
-                    h, _ = xrd_encoder(data, train=False)  # Get encoder embeddings h
-                    h = h.cpu().numpy()
-
-                    for i in range(h.shape[0]):
-                        cif_name = cif_names[i]
-                        embedding = h[i]
-                        output_file = os.path.join(embeddings_output_folder, f"{cif_name}.pkl.gz")
-                        with gzip.open(output_file, 'wb') as f:
-                            pickle.dump(embedding, f)
-
-def generate_tsne_plot(xrd_encoder, dataset, device, args):
-    import matplotlib.pyplot as plt
-    from sklearn.manifold import TSNE
-
-    xrd_encoder.eval()
-
-    # Choose a subset of the dataset for visualization
-    num_samples = min(len(dataset), args.num_samples_tsne)
-    indices = np.random.choice(len(dataset), num_samples, replace=False)
-    subset_dataset = Subset(dataset, indices)
-    data_loader = DataLoader(subset_dataset, batch_size=num_samples, shuffle=False, collate_fn=collate_fn)
-
-    # Collect embeddings and labels
-    all_embeddings = []
-    all_labels = []
-
-    with torch.no_grad():
-        for batch in tqdm(data_loader, desc='Generating t-SNE plot'):
-            *data, cif_names, spacegroup_symbols = batch
-                
-            # Generate "normal" embeddings
-            h, _ = xrd_encoder(data, train=False)  # Get encoder embeddings h
-            h = h.cpu().numpy()
-
-            all_embeddings.extend(h)
-            all_labels.append(["Original"]*len(spacegroup_symbols))
-
-            for _ in range(args.num_augmentations):
-
-                # Generate augmented embeddings
-                h, _, _, _ = xrd_encoder(data, train=True)  # Get encoder embeddings h
+        with torch.no_grad():
+            for batch in tqdm(data_loader, desc='Saving embeddings'):
+                *data, cif_names, spacegroup_symbols = batch
+                h, _ = xrd_encoder(data, train=False)  # Get encoder embeddings h
                 h = h.cpu().numpy()
 
-                all_embeddings.extend(h)
-                all_labels.append(["Augmented"]*len(spacegroup_symbols))
-                
-
-    all_embeddings = np.array(all_embeddings)
-    all_labels = np.array(all_labels)
-
-    # Perform t-SNE
-    tsne = TSNE(n_components=2, perplexity=args.tsne_perplexity, random_state=42)
-    embeddings_2d = tsne.fit_transform(all_embeddings)
-
-    # Plotting
-    plt.figure(figsize=(12, 8))
-    unique_labels = np.unique(all_labels)
-    num_classes = len(unique_labels)
-    max_colors = 10  # Maximum colors in 'tab20' colormap
-    if num_classes > max_colors:
-        print(f"Number of classes ({num_classes}) exceeds maximum colors ({max_colors}). Some colors will be reused.")
-    colors = plt.cm.get_cmap('tab10', max_colors)
-
-    markers = ['o', '^', 'D', 's', 'v', '<', '>', 'p', '*', 'h', 'H', '+', 'x', 'd', '|', '_', '.', ',', '1', '2', '3', '4']
-    if num_classes > len(markers):
-        print(f"Number of classes ({num_classes}) exceeds number of markers ({len(markers)}). Some markers will be reused.")
-
-    for idx, label in enumerate(unique_labels):
-        idxs = np.where(all_labels == label)
-        plt.scatter(embeddings_2d[idxs, 0], embeddings_2d[idxs, 1], label=label, alpha=0.7,
-                    color=colors(idx % max_colors), marker=markers[idx % len(markers)])
-
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize='small')
-    plt.title('t-SNE plot of embeddings with multiple augmentations, colored by Spacegroup')
-    plt.xlabel('Dimension 1')
-    plt.ylabel('Dimension 2')
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-def show_augmentations(xrd_encoder, dataset, args):
-    import matplotlib.pyplot as plt
-
-    # Choose a few CIFs to show
-    num_cifs_to_show = args.num_cifs_to_show
-    indices = np.random.choice(len(dataset), num_cifs_to_show, replace=False)
-    subset_dataset = Subset(dataset, indices)
-    data_loader = DataLoader(subset_dataset, batch_size=num_cifs_to_show, shuffle=False, collate_fn=collate_fn)
-
-    xrd_encoder.eval()
-
-    with torch.no_grad():
-        for batch in data_loader:
-            *data, cif_names, spacegroup_symbols = batch
-
-            # Generate original XRD patterns
-            original_patterns = generate_xrd_patterns(
-                data,
-                qmin=xrd_encoder.qmin,
-                qmax=xrd_encoder.qmax,
-                qstep=xrd_encoder.qstep,
-                fwhm=0.01  # Small FWHM for clear peaks
-            ).cpu().numpy()
-
-            # Generate augmented XRD patterns
-            augmented_patterns = augmentation(
-                data,
-                **xrd_encoder.aug_kwargs
-            ).cpu().numpy()
-
-            q_values = xrd_encoder.qs
-
-            # Plotting
-            for i in range(num_cifs_to_show):
-                plt.figure(figsize=(12, 6))
-                plt.plot(q_values, original_patterns[i], label='Original', linewidth=2)
-                plt.plot(q_values, augmented_patterns[i], label='Augmented', linewidth=1)
-                plt.title(f'Original vs Augmented XRD Pattern for CIF: {cif_names[i]}')
-                plt.xlabel('Q (1/Å)')
-                plt.ylabel('Intensity (a.u.)')
-                plt.legend()
-                plt.grid(True)
-                plt.tight_layout()
-                plt.show()
-
-    print("Displayed original and augmented XRD patterns for selected CIFs.")
+                for i in range(h.shape[0]):
+                    cif_name = cif_names[i]
+                    embedding = h[i]
+                    output_file = os.path.join(embeddings_output_folder, f"{cif_name}.pkl.gz")
+                    with gzip.open(output_file, 'wb') as f:
+                        pickle.dump(embedding, f)
+    else:
+        # Do nothing
+        pass
 
 if __name__ == '__main__':
     main()
