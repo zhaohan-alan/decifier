@@ -1,4 +1,4 @@
-out_dir: 'test_fullmasking_cond'
+out_dir: 'test_conditioning_cl_mlp'
 eval_interval: 10  # how often to evaluate against the validation set
 eval_iters_train: 10
 eval_iters_val: 10
@@ -22,7 +22,7 @@ block_size: 1024
 
 n_layer: 2
 n_head: 2
-n_embd: 64
+n_embd: 512
 dropout: 0.1
 
 learning_rate: 1e-3
@@ -35,5 +35,6 @@ warmup_iters: 10
 
 early_stopping_patience: 5
 
-condition_with_emb: True
+condition_with_mlp_emb: False
+condition_with_cl_emb: True
 boundary_masking: True
