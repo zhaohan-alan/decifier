@@ -448,9 +448,9 @@ def worker(input_queue, eval_files_dir, done_queue):
                     'rep': task['rep'],
                     'descriptors': {
                         #'xrd_gen': calculate_xrd(task['name'], cif_string, task['xrd_parameters'], task['debug']),
-                        'xrd_gen': augment_xrd_from_cif(
+                        'xrd_gen_clean': augment_xrd_from_cif(
                             cif_string,
-                            structure_name = task['name']
+                            structure_name = task['name'],
                             wavelength = task['xrd_parameters']['wavelength'],
                             qmin = task['xrd_parameters']['qmin'],
                             qmax = task['xrd_parameters']['qmax'],
@@ -461,7 +461,20 @@ def worker(input_queue, eval_files_dir, done_queue):
                             mask_prob = None,
                             debug = task['debug'],
                         ),
-                        'xrd_sample': task['xrd_cont_from_sample'],
+                        'xrd_sample_clean': augment_xrd_from_cif(
+                            task['original_cif'],
+                            structure_name = task['name'],
+                            wavelength = task['xrd_parameters']['wavelength'],
+                            qmin = task['xrd_parameters']['qmin'],
+                            qmax = task['xrd_parameters']['qmax'],
+                            qstep = task['xrd_parameters']['qstep'],
+                            fwhm_range = (task['xrd_parameters']['fwhm'], task['xrd_parameters']['fwhm']),
+                            noise_range = None,
+                            intensity_scale_range = None,
+                            mask_prob = None,
+                            debug = task['debug'],
+                        ),
+                        'xrd_sample_input': task['xrd_cont_from_sample'],
                         'soap_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['SOAP'],
                         'acsf_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['ACSF'],
                     },
