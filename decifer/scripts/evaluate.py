@@ -235,6 +235,79 @@ def calculate_xrd(structure_name, cif_string, xrd_params, debug=False):
 
     return {'q': q_continuous, 'iq': intensities_continuous}
 
+def augment_xrd_from_cif(
+    cif_string,
+    structure_name = 'null',
+    wavelength = 'CuKa',
+    qmin = 0.0,
+    qmax = 10.0,
+    qstep = 0.01,
+    fwhm_range = (0.001, 0.5),
+    noise_range = (0.001, 0.025),
+    intensity_scale_range = (0.95, 1.0),
+    mask_prob = 0.1,
+    debug = False,
+):
+    try:
+        # Parse the CIF string to get the structure
+        structure = parser_from_string(cif_string).get_structures()[0]
+        
+        # Initialize the XRD calculator using the specified wavelength
+        xrd_calculator = XRDCalculator(wavelength=wavelength)
+        
+        # Calculate the XRD pattern from the structure
+        xrd_pattern = xrd_calculator.get_pattern(structure)
+    
+    except Exception as e:
+        if debug:
+            print(f"Error processing {structure_name}: {e}")
+        return None
+    
+    # Convert 2θ (xrd_pattern.x) to Q (momentum transfer)
+    theta_radians = np.radians(xrd_pattern.x / 2)
+    q_disc = 4 * np.pi * np.sin(theta_radians) / xrd_calculator.wavelength
+    iq_disc = xrd_pattern.y
+    
+    # Define the continuous Q grid
+    q_cont = np.arange(qmin, qmax, qstep)
+        
+    # Initialize intensities_continuous
+    iq_cont = np.zeros_like(q_cont)
+    
+    # Sample a random FWHM from fwhm_range and convert to standard deviation
+    fwhm = np.random.uniform(*fwhm_range)
+    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+    
+    # Apply Gaussian broadening to the peaks
+    for q_peak, iq_peak in zip(q_disc, iq_disc):
+        if q_peak != 0:
+            gaussian_broadening = iq_peak * np.exp(-0.5 * ((q_cont - q_peak) / sigma) ** 2)
+            iq_cont += gaussian_broadening
+    
+    # Normalize the continuous intensities
+    iq_cont /= (np.max(iq_cont) + 1e-16)
+    
+    # Random scaling of intensities
+    if intensity_scale_range is not None:
+        intensity_scale = np.random.uniform(*intensity_scale_range)
+        iq_cont = iq_cont * intensity_scale
+    
+    # Random noise addition
+    if noise_range is not None:
+        noise_scale = np.random.uniform(*noise_range)
+        background = np.random.randn(len(iq_cont)) * noise_scale
+        iq_cont = iq_cont + background
+    
+    # Random masking
+    if mask_prob is not None:
+        mask = np.random.rand(len(iq_cont)) > mask_prob
+        iq_cont = iq_cont * mask
+    
+    # Clipping
+    iq_cont = np.clip(iq_cont, a_min=0.0, a_max=None)
+    
+    return {'q': q_cont, 'iq': iq_cont}
+
 def calculate_crystal_descriptors(structure_name, cif_string, species_list, descriptor_params, debug=False):
     """
     Calculates crystal structure descriptors (SOAP and ACSF) for a given CIF structure.
@@ -375,21 +448,19 @@ def worker(input_queue, eval_files_dir, done_queue):
                     'rep': task['rep'],
                     'descriptors': {
                         #'xrd_gen': calculate_xrd(task['name'], cif_string, task['xrd_parameters'], task['debug']),
-                        'xrd_gen': {
-                            'q': task['xrd_cont_from_sample']['q'],
-                            'iq': augment_xrd(
-                                task['xrd_disc_from_sample']['q'].reshape(1,-1), 
-                                task['xrd_disc_from_sample']['iq'].reshape(1,-1),
-                                qmin = task['xrd_parameters']['qmin'],
-                                qmax = task['xrd_parameters']['qmax'],
-                                qstep = task['xrd_parameters']['qstep'],
-                                fwhm_range = (task['xrd_parameters']['fwhm'], task['xrd_parameters']['fwhm']),
-                                noise_range = None,
-                                intensity_scale_range = None,
-                                mask_prob = None,
-                            ).squeeze(0).numpy()
-                        },
-
+                        'xrd_gen': augment_xrd_from_cif(
+                            cif_string,
+                            structure_name = task['name']
+                            wavelength = task['xrd_parameters']['wavelength'],
+                            qmin = task['xrd_parameters']['qmin'],
+                            qmax = task['xrd_parameters']['qmax'],
+                            qstep = task['xrd_parameters']['qstep'],
+                            fwhm_range = (task['xrd_parameters']['fwhm'], task['xrd_parameters']['fwhm']),
+                            noise_range = None,
+                            intensity_scale_range = None,
+                            mask_prob = None,
+                            debug = task['debug'],
+                        ),
                         'xrd_sample': task['xrd_cont_from_sample'],
                         'soap_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['SOAP'],
                         'acsf_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['ACSF'],
