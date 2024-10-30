@@ -17,205 +17,13 @@ from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
-from pymatgen.analysis.diffraction.xrd import XRDCalculator
-from pymatgen.io.cif import CifParser
-
 from decifer import (
     space_group_symbol_to_number,
     extract_space_group_symbol,
     DeciferDataset,
+    CLEncoder,
+    augment_xrd,
 )
-
-# Conditional imports for backwards compatibility with older pymatgen versions
-try:
-    parser_from_string = CifParser.from_str
-except AttributeError:
-    parser_from_string = CifParser.from_string
-
-# Define the augmentation function for a batch of CIF strings
-def augmentation(
-    data,
-    qmin,
-    qmax,
-    qstep,
-    fwhm_range,
-    noise_range,
-    intensity_scale_range,
-    mask_prob
-):
-    # Define the continuous Q grid
-    q_continuous = np.arange(qmin, qmax, qstep)
-    num_q_points = len(q_continuous)
-    
-    augmented_patterns = []
-        
-    for q, iq in zip(*data):
-        # Initialize intensities_continuous
-        intensities_continuous = np.zeros_like(q_continuous)
-        
-        # Sample a random FWHM from fwhm_range and convert to standard deviation
-        fwhm = np.random.uniform(*fwhm_range)
-        sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
-        
-        # Apply Gaussian broadening to the peaks
-        for q_peak, intensity in zip(q, iq):
-            if q_peak != 0:
-                gaussian_broadening = intensity * np.exp(-0.5 * ((q_continuous - q_peak) / sigma) ** 2)
-                intensities_continuous += gaussian_broadening
-        
-        # Normalize the continuous intensities
-        intensities_continuous /= (np.max(intensities_continuous) + 1e-16)
-        
-        # Random scaling of intensities
-        intensity_scale = np.random.uniform(*intensity_scale_range)
-        xrd_scaled = intensities_continuous * intensity_scale
-        
-        # Random noise addition
-        noise_scale = np.random.uniform(*noise_range)
-        background = np.random.randn(len(xrd_scaled)) * noise_scale
-        xrd_augmented = xrd_scaled + background
-        
-        # Random masking
-        mask = np.random.rand(len(xrd_augmented)) > mask_prob
-        xrd_augmented = xrd_augmented * mask
-        
-        # Clipping
-        xrd_augmented = np.clip(xrd_augmented, a_min=0.0, a_max=None)
-        
-        # Append to list
-        augmented_patterns.append(xrd_augmented.astype(np.float32))
-        
-    # Stack all augmented patterns into a numpy array
-    xrd_augmented_batch = np.stack(augmented_patterns)
-    
-    # Convert to torch tensor
-    xrd_augmented_batch = torch.from_numpy(xrd_augmented_batch)
-    
-    return xrd_augmented_batch
-
-# Define a function to generate XRD patterns without augmentation for inference
-def generate_xrd_patterns(
-    data,
-    qmin=0.0,
-    qmax=10.0,
-    qstep=0.01,
-    fwhm=0.01  # A default small FWHM value for consistent broadening
-):
-    
-    # Define the continuous Q grid
-    q_continuous = np.arange(qmin, qmax, qstep)
-    num_q_points = len(q_continuous)
-    
-    xrd_patterns = []
-    
-    for q, iq in zip(*data):
-        # Initialize intensities_continuous
-        intensities_continuous = np.zeros_like(q_continuous)
-        
-        # Convert FWHM to standard deviation
-        sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
-        
-        # Apply Gaussian broadening to the peaks
-        for q_peak, intensity in zip(q, iq):
-            if q_peak != 0:
-                gaussian_broadening = intensity * np.exp(-0.5 * ((q_continuous - q_peak) / sigma) ** 2)
-                intensities_continuous += gaussian_broadening
-        
-        # Normalize the continuous intensities
-        intensities_continuous /= (np.max(intensities_continuous) + 1e-16)
-        
-        # Append to list
-        xrd_patterns.append(intensities_continuous.astype(np.float32))
-    
-    # Stack all patterns into a numpy array
-    xrd_batch = np.stack(xrd_patterns)
-    
-    # Convert to torch tensor
-    xrd_batch = torch.from_numpy(xrd_batch)
-    
-    return xrd_batch
-
-# Model definitions
-class CLEncoder(nn.Module):
-    def __init__(
-        self, 
-        embedding_dim, 
-        proj_dim, 
-        qmin,
-        qmax,
-        qstep,
-        fwhm_range,
-        noise_range,
-        intensity_scale_range, 
-        mask_prob
-    ):
-        super(CLEncoder, self).__init__()
-        # XRD parameters
-        self.qmin = qmin
-        self.qmax = qmax
-        self.qstep = qstep
-
-        # Input dim
-        self.qs = np.arange(qmin, qmax, qstep)
-        input_dim = len(self.qs)
-
-        # Encoder head
-        self.enc = nn.Sequential(
-            nn.Linear(input_dim, 512),
-            nn.ReLU(),
-            nn.Linear(512, embedding_dim)
-        )
-        
-        # Projection head
-        self.proj = nn.Sequential(
-            nn.Linear(embedding_dim, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, proj_dim)
-        )
-        # Augmentation parameters
-        self.intensity_scale_range = intensity_scale_range
-        self.mask_prob = mask_prob
-        self.fwhm_range = fwhm_range
-        self.noise_range = noise_range
-
-        self.aug_kwargs = {
-            'intensity_scale_range': intensity_scale_range,
-            'mask_prob': mask_prob,
-            'qmin': qmin,
-            'qmax': qmax,
-            'qstep': qstep,
-            'fwhm_range': fwhm_range,
-            'noise_range': noise_range,
-        }
-
-    def forward(self, data, train=True):
-        if train:
-            # Get two augmentations of the same batch
-            augm1 = augmentation(data, **self.aug_kwargs).to(next(self.enc.parameters()).device)
-            augm2 = augmentation(data, **self.aug_kwargs).to(next(self.enc.parameters()).device)
-        
-            # Extract encoder embeddings
-            h_1 = self.enc(augm1)
-            h_2 = self.enc(augm2)
-
-            # Extract low-dimensional embeddings
-            h_1_latent = self.proj(h_1)
-            h_2_latent = self.proj(h_2)
-            return h_1, h_2, h_1_latent, h_2_latent
-        else:
-            # Generate XRD patterns without augmentation
-            xrd_batch = generate_xrd_patterns(
-                data,
-                qmin=self.qmin,
-                qmax=self.qmax,
-                qstep=self.qstep,
-                fwhm=0.01  # Use a default small FWHM for consistent broadening
-            ).to(next(self.enc.parameters()).device)
-
-            # Extract encoder embeddings
-            h = self.enc(xrd_batch)
-            h_latent = self.proj(h)
-            return h, h_latent
         
 def collate_fn(batch):
     # Seperate fields from the batch
@@ -303,7 +111,6 @@ def generate_tsne_plot(xrd_encoder, dataset, device, args):
     plt.show()
 
 def show_augmentations(xrd_encoder, dataset, args):
-    import matplotlib.pyplot as plt
 
     # Choose a few CIFs to show
     num_cifs_to_show = args.num_cifs_to_show
@@ -327,7 +134,7 @@ def show_augmentations(xrd_encoder, dataset, args):
             ).cpu().numpy()
 
             # Generate augmented XRD patterns
-            augmented_patterns = augmentation(
+            augmented_patterns = augment_xrd(
                 data,
                 **xrd_encoder.aug_kwargs
             ).cpu().numpy()

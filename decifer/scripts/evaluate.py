@@ -52,6 +52,8 @@ from decifer import (
     bond_length_reasonableness_score,
     extract_species,
     extract_composition,
+    CLEncoder,
+    augment_xrd,
 )
 
 def safe_extract(extract_function, *args, return_boolean=False):
@@ -324,7 +326,8 @@ def worker(input_queue, eval_files_dir, done_queue):
             - 'index': Index of the task for tracking purposes.
             - 'rep': Repetition number for multiple attempts.
             - 'xrd_parameters': Parameters for XRD calculation.
-            - 'xrd_from_sample': XRD data from the sample for comparison.
+            - 'xrd_cont_from_sample': XRD data from the sample for comparison.
+            - 'xrd_disc_from_sample': XRD data from the sample for comparison.
             - 'species': Atomic species involved in the structure.
             - 'desc_parameters': Parameters for descriptor (SOAP, ACSF) calculations.
             - 'dataset': Name of the dataset (optional, defaults to 'UnknownDataset').
@@ -371,8 +374,23 @@ def worker(input_queue, eval_files_dir, done_queue):
                     'index': task['index'],
                     'rep': task['rep'],
                     'descriptors': {
-                        'xrd_gen': calculate_xrd(task['name'], cif_string, task['xrd_parameters'], task['debug']),
-                        'xrd_sample': task['xrd_from_sample'],
+                        #'xrd_gen': calculate_xrd(task['name'], cif_string, task['xrd_parameters'], task['debug']),
+                        'xrd_gen': {
+                            'q': task['xrd_cont_from_sample']['q'],
+                            'iq': augment_xrd(
+                                task['xrd_disc_from_sample']['q'].reshape(1,-1), 
+                                task['xrd_disc_from_sample']['iq'].reshape(1,-1),
+                                qmin = task['xrd_parameters']['qmin'],
+                                qmax = task['xrd_parameters']['qmax'],
+                                qstep = task['xrd_parameters']['qstep'],
+                                fwhm_range = (0.01, 0.01),
+                                noise_range = None,
+                                intensity_scale_range = None,
+                                mask_prob = None,
+                            ).squeeze(0).numpy()
+                        },
+
+                        'xrd_sample': task['xrd_cont_from_sample'],
                         'soap_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['SOAP'],
                         'acsf_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['ACSF'],
                     },
@@ -437,7 +455,7 @@ def save_evaluation(eval_result, structure_name, repetition_num, eval_files_dir)
             os.remove(temp_filename)  # Clean up incomplete temporary file
         raise IOError(f"Failed to save evaluation for {structure_name} (rep {repetition_num}): {e}")
 
-def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, debug_max, override, condition, zero_cond, temperature, top_k, add_noise, **kwargs):
+def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, debug_max, override, condition_with_mlp_emb, condition_with_cl_emb, zero_cond, temperature, top_k, augment_param_dict, cl_model_ckpt, **kwargs):
     """
     Processes a dataset, generates tokenized CIF prompts, and dispatches tasks to worker processes.
 
@@ -454,11 +472,13 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
         num_workers (int): Number of worker processes that will consume tasks from the input queue.
         debug_max (int, optional): Maximum number of samples to process in debug mode.
         override (bool): If True, ignores check of exisiting files.
-        condition (bool): If True, conditions the generations on the XRD patterns.
+        condition_with_mlp_emb (bool): If True, conditions the generations on the XRD patterns.
+        condition_with_cl_emb (bool): If True, conditions the generations on the CL embeddings.
         zero_cond (bool): If True, conditions are replaced by zero embeddings.
         temperature (float):
         top_k (int): 
-        add_noise (float): 
+        augment_param_dict (dict):
+        cl_model_ckpt (str):
         **kwargs: Additional keyword arguments, including:
             - 'num_reps' (int): Number of repetitions for generating new sequences for each sample.
             - 'add_composition' (bool): Whether to include composition information in the prompt.
@@ -476,7 +496,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
     """
     
     # Load the test dataset from the HDF5 file, including necessary features like CIF, XRD
-    test_dataset = DeciferDataset(h5_test_path, ["cif_name", "cif_tokenized", "xrd_cont.q", "xrd_cont.iq", "cif_string", "spacegroup"])
+    test_dataset = DeciferDataset(h5_test_path, ["cif_name", "cif_tokenized", "xrd_cont.q", "xrd_cont.iq", "xrd_disc.q", "xrd_disc.iq", "cif_string", "spacegroup"])
 
     # Set of existing evaluation files to avoid redundant processing
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl")))
@@ -495,8 +515,17 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
     # Tokenizer (for padding id)
     padding_id = Tokenizer().padding_id
 
+    # Load CL encoder
+    if condition_with_mlp_emb or condition_with_cl_emb:
+        assert cl_model_ckpt is not None, "No CLEncoder found"
+        checkpoint = torch.load(cl_model_ckpt)
+        model_args = checkpoint["model_args"]
+        xrd_encoder = CLEncoder(**model_args)
+        xrd_encoder.to(model.device)
+        xrd_encoder.load_state_dict(checkpoint["model"])
+
     # Iterate over the dataset samples
-    for i, (structure_name, sample, xrd_cont_q, xrd_cont_iq, original_cif, original_spacegroup) in enumerate(test_dataset):
+    for i, (structure_name, sample, xrd_cont_q, xrd_cont_iq, xrd_disc_q, xrd_disc_iq, original_cif, original_spacegroup) in enumerate(test_dataset):
         if i >= num_generations:
             break  # Stop processing if we've reached the generation limit (in debug mode)
         
@@ -515,16 +544,32 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
         
         if prompt is not None:
             # Generate token sequences from the model's output
+            
+            # TODO Add augmentation, not just noise
+            if augment_param_dict is not None:
+                xrd_cont_iq = augment_xrd(
+                    xrd_disc_q.unsqueeze(0).numpy(), 
+                    xrd_disc_iq.unsqueeze(0).numpy(),
+                    qmin = kwargs['xrd_parameters']['qmin'],
+                    qmax = kwargs['xrd_parameters']['qmax'],
+                    qstep = kwargs['xrd_parameters']['qstep'],
+                    **augment_param_dict
+                ).squeeze(0)
+            #if add_noise is not None:
+            #    if add_noise >= 1.0:
+            #        xrd_cont_iq = torch.randn_like(xrd_cont_iq)
+            #    else:
+            #        xrd_cont_iq += torch.randn_like(xrd_cont_iq) * add_noise
+                #xrd_cont_iq /= torch.max(xrd_cont_iq)
+                #xrd_cont_iq[xrd_cont_iq < 0] = 0.0
 
-            if add_noise is not None:
-                if add_noise >= 1.0:
-                    xrd_cont_iq = torch.randn_like(xrd_cont_iq)
-                else:
-                    xrd_cont_iq += torch.randn_like(xrd_cont_iq) * add_noise
-                xrd_cont_iq /= torch.max(xrd_cont_iq)
-                xrd_cont_iq[xrd_cont_iq < 0] = 0.0
-            if condition:
+            if condition_with_mlp_emb:
                 cond_vec = xrd_cont_iq.to(model.device).unsqueeze(0)
+                if zero_cond:
+                    cond_vec = torch.zeros_like(cond_vec).to(model.device)
+            elif condition_with_cl_emb:
+                xrd_cl_emb = xrd_encoder.enc(xrd_cont_iq.to(model.device)).unsqueeze(0)
+                cond_vec = xrd_cl_emb.to(model.device).unsqueeze(0)
                 if zero_cond:
                     cond_vec = torch.zeros_like(cond_vec).to(model.device)
             else:
@@ -542,7 +587,9 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
                 'index': i,
                 'rep': rep_num,
                 'xrd_parameters': kwargs['xrd_parameters'],
-                'xrd_from_sample': {'q': xrd_cont_q.numpy(), 'iq': xrd_cont_iq.numpy()},
+                'xrd_cont_from_sample': {'q': xrd_cont_q.numpy(), 'iq': xrd_cont_iq.numpy()},
+                'xrd_disc_from_sample': {'q': xrd_disc_q.numpy(), 'iq': xrd_disc_iq.numpy()},
+                #'xrd_cl_emb': xrd_cl_emb.numpy(),
                 'desc_parameters': kwargs['desc_parameters'],
                 'species': kwargs['species'],
                 'dataset': kwargs['dataset_name'],
@@ -655,11 +702,14 @@ def main():
     parser.add_argument('--num-reps', type=int, default=1, help='Number of repetitions per sample.')
     parser.add_argument('--collect-only', action='store_true', help='Just collect eval files and combine.')
     parser.add_argument('--override', action='store_true', help='Overrides the presence of existing files, effectively generating everything from scratch.')
-    parser.add_argument('--condition', action='store_true', help='Flag to condition the generations on XRD.')
+    parser.add_argument('--condition-with-mlp-emb', action='store_true', help='Flag to condition the generations on XRD.')
+    parser.add_argument('--condition-with-cl-emb', action='store_true', help='Flag to condition the generations on CL embeddings.')
     parser.add_argument('--zero-cond', action='store_true', help='Flag to replace condtioning with zero embeddings.')
     parser.add_argument('--temperature', type=float, default=1.0, help='')
     parser.add_argument('--top-k', type=int, default=None, help='')
-    parser.add_argument('--add-noise', type=float, default=None, help='Normal noise added to the conditioning, floating value between 0.0 and 1.0')
+    parser.add_argument('--cl-model-ckpt', type=str, default=None, help='')
+    parser.add_argument('--add-noise', type=float, default=None, help='')
+    parser.add_argument('--add-broadening', type=float, default=None, help='')
 
     # Argument parsing for required and optional arguments
     parser.add_argument('--soap-r_cut', type=float, default=None, help='SOAP: Cutoff radius.')
@@ -741,6 +791,24 @@ def main():
     if args.acsf_periodic is not None:
         metadata['descriptors']['acsf']['periodic'] = args.acsf_periodic
 
+    # Augmentation parameters
+    if args.add_noise is not None:
+        noise_range = (args.add_noise, args.add_noise)
+    else:
+        noise_range = None
+
+    if args.add_broadening is not None:
+        fwhm_range = (args.add_broadening, args.add_broadening)
+    else:
+        fwhm_range = None
+
+    augment_param_dict = {
+        'fwhm_range': fwhm_range,
+        'noise_range': noise_range,
+        'intensity_scale_range': None,
+        'mask_prob': None,
+    }
+
     # Directory for evaluation
     if args.out_folder is not None:
         out_folder = args.out_folder
@@ -792,11 +860,13 @@ def main():
             desc_parameters=metadata['descriptors'],
             species=metadata['species'],
             override=args.override,
-            condition=args.condition,
+            condition_with_mlp_emb=args.condition_with_mlp_emb,
+            condition_with_cl_emb=args.condition_with_cl_emb,
             zero_cond=args.zero_cond,
             temperature=args.temperature,
             top_k=args.top_k,
-            add_noise=args.add_noise,
+            augment_param_dict=augment_param_dict,
+            cl_model_ckpt=args.cl_model_ckpt,
         )
 
         if num_send > 0:
