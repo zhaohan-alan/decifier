@@ -383,7 +383,7 @@ def worker(input_queue, eval_files_dir, done_queue):
                                 qmin = task['xrd_parameters']['qmin'],
                                 qmax = task['xrd_parameters']['qmax'],
                                 qstep = task['xrd_parameters']['qstep'],
-                                fwhm_range = (0.01, 0.01),
+                                fwhm_range = (task['xrd_parameters']['fwhm'], task['xrd_parameters']['fwhm']),
                                 noise_range = None,
                                 intensity_scale_range = None,
                                 mask_prob = None,
@@ -707,7 +707,6 @@ def main():
     parser.add_argument('--zero-cond', action='store_true', help='Flag to replace condtioning with zero embeddings.')
     parser.add_argument('--temperature', type=float, default=1.0, help='')
     parser.add_argument('--top-k', type=int, default=None, help='')
-    parser.add_argument('--cl-model-ckpt', type=str, default=None, help='')
     parser.add_argument('--add-noise', type=float, default=None, help='')
     parser.add_argument('--add-broadening', type=float, default=None, help='')
 
@@ -791,6 +790,9 @@ def main():
     if args.acsf_periodic is not None:
         metadata['descriptors']['acsf']['periodic'] = args.acsf_periodic
 
+    # CL encoder
+    cl_model_ckpt = metadata['cl_embeddings']['model_path']
+
     # Augmentation parameters
     if args.add_noise is not None:
         noise_range = (args.add_noise, args.add_noise)
@@ -800,7 +802,7 @@ def main():
     if args.add_broadening is not None:
         fwhm_range = (args.add_broadening, args.add_broadening)
     else:
-        fwhm_range = None
+        fwhm_range = (metadata['xrd']['fwhm'], metadata['xrd']['fwhm'])
 
     augment_param_dict = {
         'fwhm_range': fwhm_range,
@@ -866,7 +868,7 @@ def main():
             temperature=args.temperature,
             top_k=args.top_k,
             augment_param_dict=augment_param_dict,
-            cl_model_ckpt=args.cl_model_ckpt,
+            cl_model_ckpt=cl_model_ckpt,
         )
 
         if num_send > 0:
