@@ -407,6 +407,10 @@ def load_model_from_checkpoint(ckpt_path, device):
     checkpoint = torch.load(ckpt_path, map_location=device)  # Load checkpoint
     state_dict = checkpoint["best_model"]
     model_args = checkpoint["model_args"]
+
+    # TEMP TODO
+    if "condition_with_emb" in model_args:
+        model_args['condition_with_mlp_emb'] = model_args.pop('condition_with_emb')
     
     # Load the model and checkpoint
     model_config = DeciferConfig(**model_args)
