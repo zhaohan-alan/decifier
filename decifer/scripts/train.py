@@ -32,6 +32,7 @@ from decifer import (
     DeciferDataset,
     Tokenizer,
     RandomBatchSampler,
+    disc_to_cont_xrd,
 )
 
 @dataclass
@@ -72,6 +73,17 @@ class TrainConfig:
     condition_with_mlp_emb: bool = False
     condition_with_cl_emb: bool = False
     boundary_masking: bool = True
+
+    # Augmentation at training time
+    fwhm_range_min: float = 0.001 
+    fwhm_range_max: float = 0.5
+    eta_range_min: float = 0.5
+    eta_range_max: float = 0.5
+    noise_range_min: float = 0.001
+    noise_range_max: float = 0.025
+    intensity_scale_range_min: float = 0.95
+    intensity_scale_range_max: float = 1.0
+    mask_prob: float = 0.1
 
     # AdamW optimizer
     learning_rate: float = 6e-4  # max learning rate
@@ -140,46 +152,69 @@ if __name__ == "__main__":
     with open(metadata_path, "r") as f:
         metadata = json.load(f)
     try:
-        C.vocab_size = metadata["voacb_size"]
+        C.vocab_size = metadata["vocab_size"]
         print(f"Found vocab_size = {C.vocab_size} in {metadata_path}", flush=True)
         # TODO Get conditioning size from metadata as well
     except:
         print(f"No metadata found, defaulting...")
 
+    # def collate_fn(batch):
+    #     # batch is a list of tuples
+    #     num_fields = len(batch[0])
+    #     batch_data = []
+    #     for i in range(num_fields):
+    #         field_data = [item[i] for item in batch]
+    #         if isinstance(field_data[0], torch.Tensor):
+    #             # Pad the sequences to the maximum length in the batch
+    #             padded_seqs = pad_sequence(field_data, batch_first=True, padding_value=tokenizer.padding_id)
+    #             batch_data.append(padded_seqs)
+    #         else:
+    #             batch_data.append(field_data)
+    #     return tuple(batch_data)
+
+    #     from torch.nn.utils.rnn import pad_sequence
+
     def collate_fn(batch):
-        # batch is a list of tuples
-        num_fields = len(batch[0])
-        batch_data = []
-        for i in range(num_fields):
-            field_data = [item[i] for item in batch]
+        # batch is a list of dictionaries
+        batch_data = {}
+        for key in batch[0].keys():
+            field_data = [item[key] for item in batch]
+            
             if isinstance(field_data[0], torch.Tensor):
                 # Pad the sequences to the maximum length in the batch
                 padded_seqs = pad_sequence(field_data, batch_first=True, padding_value=tokenizer.padding_id)
-                batch_data.append(padded_seqs)
+                batch_data[key] = padded_seqs
             else:
-                batch_data.append(field_data)
-        return tuple(batch_data)
+                batch_data[key] = field_data  # Leave non-tensor fields as-is
+        
+        return batch_data
 
-    # Conditioning
-    condition = C.condition_with_mlp_emb or C.condition_with_cl_emb
-    if C.condition_with_cl_emb:
-        dataset_fields = ["cif_tokenized", "xrd_cl_emb"]
-        condition = True
-    elif C.condition_with_mlp_emb:
-        dataset_fields = ["cif_tokenized", "xrd_cont.iq"]
-        condition = True
-    else:
-        dataset_fields = ["cif_tokenized"]
-        condition = False
+    # Augmentation kwargs
+    augmentation_kwargs = {
+        'qmin': metadata["xrd"]["qmin"],
+        'qmax': metadata["xrd"]["qmax"],
+        'qstep': metadata["xrd"]["qstep"],
+        'fwhm_range': (C.fwhm_range_min, C.fwhm_range_max),
+        'eta_range': (C.eta_range_min, C.eta_range_max),
+        'noise_range': (C.noise_range_min, C.noise_range_max),
+        'intensity_scale_range': (C.intensity_scale_range_min, C.intensity_scale_range_max),
+        'mask_prob': C.mask_prob,
+    }
+
+    # Load CLEncoder model path if it exists
+    cl_model_ckpt = metadata['cl_embeddings']['model_path'] if "cl_embeddings" in metadata else None
+
+    # Cond size from augmentation kwargs
+    C.cond_size = len(np.arange(augmentation_kwargs['qmin'], augmentation_kwargs['qmax'], augmentation_kwargs['qstep']))
+    
+    # Collect relevant data
+    dataset_fields = ["cif_tokenized", "xrd_disc.q", "xrd_disc.iq"]
 
     # Initialise datasets/loaders 
     train_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/train.h5"), dataset_fields)
     val_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/val.h5"), dataset_fields)
     test_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/test.h5"), dataset_fields)
         
-    if C.condition_with_cl_emb or C.condition_with_mlp_emb:
-        C.cond_size = next(iter(train_dataset))[1].shape[-1]
-
     # Random batching sampler, train
     train_sampler = SubsetRandomSampler(range(len(train_dataset)))
     train_batch_sampler = RandomBatchSampler(train_sampler, batch_size=C.batch_size, drop_last=False)
@@ -225,6 +260,7 @@ if __name__ == "__main__":
         condition_with_mlp_emb=C.condition_with_mlp_emb,
         condition_with_cl_emb=C.condition_with_cl_emb,
         boundary_masking=C.boundary_masking,
+        cl_model_ckpt = cl_model_ckpt,
     )
 
     if C.init_from == "scratch":
@@ -318,7 +354,7 @@ if __name__ == "__main__":
     # Initialize a dictionary to keep data iterators per split
     data_iters = {}
 
-    def get_batch_packed(split, conditioning=False):
+    def get_batch_packed(split):
         # Retrieve the dataloader and initialize the iterator
         dataloader = dataloaders[split]
         if split not in data_iters:
@@ -335,7 +371,7 @@ if __name__ == "__main__":
         # Initialize lists to store packed sequences and start indices
         packed_sequences = []
         start_indices_list = []
-        cond_list = [] if conditioning else None
+        cond_list = [] if C.condition_with_mlp_emb or C.condition_with_cl_emb else None
 
         # Collect sequences until we have enough to fill the batch
         total_sequences = []
@@ -348,16 +384,20 @@ if __name__ == "__main__":
                 data_iters[split] = data_iter
                 batch = next(data_iter)
 
-            sequences = batch[0]  # Assuming batch[0] contains sequences
-            if conditioning:
-                cond_batch = batch[1]
-
-            # Remove padding tokens (assuming padding token is 0)
+            # Fetch sequences and remove padding tokens (assuming padding token is 0)
+            sequences = batch['cif_tokenized']
             sequences = [torch.cat([seq[seq != pad_token_id], torch.tensor([newline_id, newline_id], dtype=torch.long)]) for seq in sequences]
-
             total_sequences.extend(sequences)
-            if conditioning:
-                cond_list.extend(cond_batch)
+
+            # Fetch conditioning and augment to cont signals
+            if C.condition_with_cl_emb or C.condition_with_mlp_emb:
+                cond_list.extend(
+                    disc_to_cont_xrd(
+                        batch_q = batch['xrd_disc.q'],
+                        batch_iq = batch['xrd_disc.iq'],
+                        **augmentation_kwargs,
+                    )['iq']
+                )
 
         # Now pack sequences into batches without loops
         # Concatenate all sequences into one long tensor
@@ -394,7 +434,7 @@ if __name__ == "__main__":
             start_indices_list.append(indices)
 
         # Handle conditioning data if required
-        if conditioning and cond_list:
+        if cond_list:
             # Collect conditioning data corresponding to sequences included
             index = torch.searchsorted(seq_cum_lengths, num_batches * block_size)
             cond_list = cond_list[:index+1]
@@ -417,7 +457,7 @@ if __name__ == "__main__":
         # Return the batch data and start indices
         return X_batch, Y_batch, cond_batch, start_indices_list
 
-    def get_batch_padded(split, conditioning=False):
+    def get_batch_padded(split):
 
         # Retrieve dataloader
         dataloader = dataloaders[split]
@@ -436,13 +476,17 @@ if __name__ == "__main__":
             batch = next(data_iter)
 
         # Split the batch into X and Y
-        data = batch[0]
+        data = batch['cif_tokenized']
 
         X = data[:,:-1]
         Y = data[:,1:] # Shifted
 
-        if conditioning:
-            cond = batch[1]
+        if C.condition_with_mlp_emb: # CL not support for now TODO
+            cond = disc_to_cont_xrd(
+                batch_q = batch['xrd_disc.q'],
+                batch_iq = batch['xrd_disc.iq'],
+                **augmentation_kwargs,
+            )['iq']
         else:
             cond = None
 
@@ -450,11 +494,11 @@ if __name__ == "__main__":
         if C.device == "cuda":
             X = X.pin_memory().to(C.device, non_blocking=True)
             Y = Y.pin_memory().to(C.device, non_blocking=True)
-            cond = cond.pin_memory().to(C.device, non_blocking=True) if conditioning else cond
+            cond = cond.pin_memory().to(C.device, non_blocking=True) if cond is not None else cond
         else:
             X = X.pin_memory().to(C.device)
             Y = Y.pin_memory().to(C.device)
-            cond = cond.pin_memory().to(C.device) if conditioning else cond
+            cond = cond.pin_memory().to(C.device) if cond is not None else cond
 
         # Return the batch with or without sample indices
         return X, Y, cond, None
@@ -467,7 +511,7 @@ if __name__ == "__main__":
         for split, eval_iters in [("train", C.eval_iters_train), ("val", C.eval_iters_val)]:
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                X, Y, cond, start_indices = get_batch(split, condition)
+                X, Y, cond, start_indices = get_batch(split)
                 with ctx:
                     logits, loss = model(X, cond, Y, start_indices)
                 losses[k] = loss.item()
@@ -496,7 +540,7 @@ if __name__ == "__main__":
         get_batch = get_batch_padded
 
     # training loop
-    X, Y, cond, start_indices = get_batch("train", condition)
+    X, Y, cond, start_indices = get_batch("train")
     t0 = time.time()
     local_iter_num = 0  # number of iterations in the lifetime of this process
     while True:
@@ -510,7 +554,6 @@ if __name__ == "__main__":
         if iter_num % C.eval_interval == 0:
             if C.validate:
                 losses = estimate_loss()
-
 
                 # Metrics
                 metrics['train_losses'].append(losses['train'])
@@ -562,14 +605,14 @@ if __name__ == "__main__":
         small_step_pbar = tqdm(desc='Accumulating losses...', total=C.gradient_accumulation_steps, leave=False, disable=not C.accumulative_pbar)
         for micro_step in range(C.gradient_accumulation_steps):
             with ctx:
-            
                 logits, loss = model(X, cond, Y, start_indices)
                 
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            X, Y, cond, start_indices = get_batch("train", condition)
+            X, Y, cond, start_indices = get_batch("train")
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
             small_step_pbar.update(1)
+
         small_step_pbar.close()
         # clip the gradient
         if C.grad_clip != 0.0:
@@ -578,8 +621,7 @@ if __name__ == "__main__":
         # step the optimizer and scaler if training in fp16
         scaler.step(optimizer)
         scaler.update()
-        #print(model.transformer.cond_embedding[0].weight.grad)
-        #print(model.transformer.cond_embedding[2].weight.grad)
+
         # flush the gradients as soon as we can, no need for this memory anymore
         optimizer.zero_grad(set_to_none=True)
 

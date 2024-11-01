@@ -1,5 +1,5 @@
-out_dir: 'test_conditioning_cl_mlp'
-eval_interval: 10  # how often to evaluate against the validation set
+out_dir: 'test_augment_at_training_time'
+eval_interval: 2  # how often to evaluate against the validation set
 eval_iters_train: 10
 eval_iters_val: 10
 log_interval: 1  # how often to print to the console (1 = every iteration)
@@ -16,9 +16,9 @@ always_save_checkpoint: True
 # whether to validate with a validation set
 validate: True
 
-dataset: 'data/crystallm/1k'
+dataset: 'data/crystallm/2k'
 batch_size: 8
-block_size: 1024
+block_size: 512
 
 n_layer: 2
 n_head: 2
@@ -35,6 +35,6 @@ warmup_iters: 10
 
 early_stopping_patience: 5
 
-condition_with_mlp_emb: False
-condition_with_cl_emb: True
+condition_with_mlp_emb: True
+condition_with_cl_emb: False
 boundary_masking: True

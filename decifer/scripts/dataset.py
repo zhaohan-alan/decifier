@@ -19,7 +19,7 @@ class DeciferDataset(Dataset):
         return self.dataset_length
 
     def __getitem__(self, idx):
-        data = []
+        data = {}
         for key in self.data_keys:
             sequence = self.data[key][idx]
 
@@ -32,9 +32,9 @@ class DeciferDataset(Dataset):
             else:
                 raise TypeError(f"Unsupported sequence type {type(sequence)}")
 
-            data.append(sequence)
+            data[key] = sequence
 
-        return tuple(data)
+        return data
 
 class HDF5Dataset(Dataset):
     def __init__(self, h5_file_path, data_to_load, block_size, numeric_padding_value=0):

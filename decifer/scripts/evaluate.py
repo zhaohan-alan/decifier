@@ -35,9 +35,9 @@ from dscribe.descriptors import SOAP, ACSF
 # Local module imports (custom modules)
 from decifer import (
     DeciferDataset,
-    load_model_from_checkpoint,
+    Decifer,
+    DeciferConfig,
     Tokenizer,
-    extract_prompt,
     replace_symmetry_loop_with_P1,
     extract_space_group_symbol,
     reinstate_symmetry_loop,
@@ -53,8 +53,106 @@ from decifer import (
     extract_species,
     extract_composition,
     CLEncoder,
-    augment_xrd,
+    disc_to_cont_xrd,
+    disc_to_cont_xrd_from_cif,
 )
+
+def extract_prompt(sequence, device, add_composition=True, add_spacegroup=False):
+    
+    tokenizer = Tokenizer()
+    cif_start_id = tokenizer.token_to_id["data_"]
+    new_line_id = tokenizer.token_to_id["\n"]
+    spacegroup_id = tokenizer.token_to_id["_symmetry_space_group_name_H-M"]
+
+    # Find "data_" and slice
+    try:
+        end_prompt_index = np.argwhere(sequence == cif_start_id)[0][0] + 1
+    except IndexError:
+        #return 
+        raise ValueError(f"'data_' id: {cif_start_id} not found in sequence", tokenizer.decode(sequence))
+
+    cond_ids = torch.tensor(sequence[:end_prompt_index].long())
+    cond_ids_len = len(cond_ids) - 1
+
+    # Add composition (and spacegroup)
+    if add_composition:
+        end_prompt_index += np.argwhere(sequence[end_prompt_index:] == new_line_id)[0][0]
+
+        if add_spacegroup:
+            end_prompt_index += np.argwhere(sequence[end_prompt_index:] == spacegroup_id)[0][0]
+            end_prompt_index += np.argwhere(sequence[end_prompt_index:] == new_line_id)[0][0]
+            
+        end_prompt_index += 1
+    
+    prompt_ids = torch.tensor(sequence[:end_prompt_index].long()).to(device=device)
+
+    return prompt_ids
+
+def extract_prompt_batch(sequences, device, add_composition=True, add_spacegroup=False):
+    """
+    Extract prompt sequences from a batch of sequences and apply front padding (left-padding).
+    """
+    tokenizer = Tokenizer()
+    cif_start_id = tokenizer.token_to_id["data_"]
+    new_line_id = tokenizer.token_to_id["\n"]
+    spacegroup_id = tokenizer.token_to_id["_symmetry_space_group_name_H-M"]
+
+    prompts = []
+    prompt_lengths = []
+    max_len = 0
+
+    # Loop through each sequence in the batch
+    for sequence in sequences:
+        # Find "data_" and slice
+        try:
+            end_prompt_index = np.argwhere(sequence == cif_start_id)[0][0] + 1
+        except IndexError:
+            raise ValueError(f"'data_' id: {cif_start_id} not found in sequence", tokenizer.decode(sequence))
+
+        # Handle composition and spacegroup additions
+        if add_composition:
+            end_prompt_index += np.argwhere(sequence[end_prompt_index:] == new_line_id)[0][0]
+            if add_spacegroup:
+                end_prompt_index += np.argwhere(sequence[end_prompt_index:] == spacegroup_id)[0][0]
+                end_prompt_index += np.argwhere(sequence[end_prompt_index:] == new_line_id)[0][0]
+
+        # Extract the prompt for this sequence
+        prompt_ids = torch.tensor(sequence[:end_prompt_index + 1].long()).to(device)
+        prompts.append(prompt_ids)
+        prompt_lengths.append(len(prompt_ids))
+        max_len = max(max_len, len(prompt_ids))
+
+    # Apply left-padding: pad from the front to ensure all prompts are the same length
+    padded_prompts = torch.full((len(sequences), max_len), tokenizer.padding_id, dtype=torch.long).to(device)
+    for i, prompt in enumerate(prompts):
+        prompt_len = len(prompt)
+        # Left-pad by inserting the prompt at the end of the padded sequence
+        padded_prompts[i, -prompt_len:] = prompt
+
+    return padded_prompts, prompt_lengths
+
+# Function to load model from a checkpoint
+def load_model_from_checkpoint(ckpt_path, device):
+    
+    # Checkpoint
+    checkpoint = torch.load(ckpt_path, map_location=device)  # Load checkpoint
+    state_dict = checkpoint["best_model"]
+    model_args = checkpoint["model_args"]
+    
+    # Load the model and checkpoint
+    model_config = DeciferConfig(**model_args)
+    model = Decifer(model_config).to(device)
+    model.device = device
+    
+    # Fix the keys of the state dict per CrystaLLM
+    unwanted_prefix = "_orig_mod."
+    for k, v in list(state_dict.items()):
+        if k.startswith(unwanted_prefix):
+            state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+    
+    #model.load_state_dict(state_dict)  # Load modified state_dict into the model
+    model.load_state_dict(state_dict)
+    return model
 
 def safe_extract(extract_function, *args, return_boolean=False):
     """
@@ -164,149 +262,6 @@ def get_statistics(cif_string):
     stat_dict['composition'] = safe_extract(extract_composition, cif_string)
     
     return stat_dict
-
-
-def calculate_xrd(structure_name, cif_string, xrd_params, debug=False):
-    """
-    Calculates the X-ray diffraction (XRD) pattern for a given CIF structure.
-
-    This function takes a CIF string, extracts its atomic structure, and computes the 
-    XRD pattern based on the provided parameters. It applies Gaussian broadening 
-    to the XRD peaks and optionally adds noise based on a signal-to-noise ratio (SNR).
-
-    Args:
-        structure_name (str): The name of the structure being processed (for debugging purposes).
-        cif_string (str): The CIF data string representing the structure.
-        xrd_params (dict): Dictionary containing XRD parameters with the following keys:
-            - 'wavelength': The wavelength used for XRD calculation.
-            - 'qmin': The minimum value of Q (momentum transfer) for the output grid.
-            - 'qmax': The maximum value of Q for the output grid.
-            - 'qstep': The step size for the Q grid.
-            - 'fwhm': The full width at half maximum for the Gaussian peak broadening.
-            - 'snr': The signal-to-noise ratio for adding noise (lower values add more noise).
-        debug (bool, optional): If True, additional debugging information will be printed. Defaults to False.
-
-    Returns:
-        dict: A dictionary with two keys:
-            - 'q': The Q values (momentum transfer) on a regular grid.
-            - 'iq': The corresponding intensities (normalized), with noise applied if specified.
-            Returns None if an error occurs during the calculation.
-    """
-    try:
-        # Parse the CIF string to get the structure
-        structure = parser_from_string(cif_string).get_structures()[0]
-        
-        # Initialize the XRD calculator using the specified wavelength
-        xrd_calculator = XRDCalculator(wavelength=xrd_params['wavelength'])
-        
-        # Calculate the XRD pattern from the structure
-        xrd_pattern = xrd_calculator.get_pattern(structure)
-    
-    except Exception as e:
-        if debug:
-            print(f"Error processing {structure_name}: {e}")
-        return None
-    
-    # Convert 2θ (xrd_pattern.x) to Q (momentum transfer)
-    theta_radians = np.radians(xrd_pattern.x / 2)
-    q_values = 4 * np.pi * np.sin(theta_radians) / xrd_calculator.wavelength
-    
-    # Normalize intensities
-    intensities_normalized = xrd_pattern.y / (np.max(xrd_pattern.y) + 1e-16)
-    
-    # Define the continuous Q grid
-    q_continuous = np.arange(xrd_params['qmin'], xrd_params['qmax'], xrd_params['qstep'])
-    
-    # Initialize the continuous intensity array
-    intensities_continuous = np.zeros_like(q_continuous)
-    
-    # Apply Gaussian broadening to the peaks
-    for q_peak, intensity in zip(q_values, xrd_pattern.y):
-        gaussian_broadening = intensity * np.exp(-0.5 * ((q_continuous - q_peak) / xrd_params['fwhm']) ** 2)
-        intensities_continuous += gaussian_broadening
-    
-    # Normalize the continuous intensities
-    intensities_continuous /= (np.max(intensities_continuous) + 1e-16)
-    
-    # Add noise to the signal if the SNR is less than 100
-    if xrd_params['snr'] < 100.:
-        noise = np.random.normal(0, np.max(intensities_continuous) / xrd_params['snr'], size=intensities_continuous.shape)
-        intensities_continuous = np.clip(intensities_continuous + noise, 0, None)
-
-    return {'q': q_continuous, 'iq': intensities_continuous}
-
-def augment_xrd_from_cif(
-    cif_string,
-    structure_name = 'null',
-    wavelength = 'CuKa',
-    qmin = 0.0,
-    qmax = 10.0,
-    qstep = 0.01,
-    fwhm_range = (0.001, 0.5),
-    noise_range = (0.001, 0.025),
-    intensity_scale_range = (0.95, 1.0),
-    mask_prob = 0.1,
-    debug = False,
-):
-    try:
-        # Parse the CIF string to get the structure
-        structure = parser_from_string(cif_string).get_structures()[0]
-        
-        # Initialize the XRD calculator using the specified wavelength
-        xrd_calculator = XRDCalculator(wavelength=wavelength)
-        
-        # Calculate the XRD pattern from the structure
-        xrd_pattern = xrd_calculator.get_pattern(structure)
-    
-    except Exception as e:
-        if debug:
-            print(f"Error processing {structure_name}: {e}")
-        return None
-    
-    # Convert 2θ (xrd_pattern.x) to Q (momentum transfer)
-    theta_radians = np.radians(xrd_pattern.x / 2)
-    q_disc = 4 * np.pi * np.sin(theta_radians) / xrd_calculator.wavelength
-    iq_disc = xrd_pattern.y
-    
-    # Define the continuous Q grid
-    q_cont = np.arange(qmin, qmax, qstep)
-        
-    # Initialize intensities_continuous
-    iq_cont = np.zeros_like(q_cont)
-    
-    # Sample a random FWHM from fwhm_range and convert to standard deviation
-    fwhm = np.random.uniform(*fwhm_range)
-    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
-    
-    # Apply Gaussian broadening to the peaks
-    for q_peak, iq_peak in zip(q_disc, iq_disc):
-        if q_peak != 0:
-            gaussian_broadening = iq_peak * np.exp(-0.5 * ((q_cont - q_peak) / sigma) ** 2)
-            iq_cont += gaussian_broadening
-    
-    # Normalize the continuous intensities
-    iq_cont /= (np.max(iq_cont) + 1e-16)
-    
-    # Random scaling of intensities
-    if intensity_scale_range is not None:
-        intensity_scale = np.random.uniform(*intensity_scale_range)
-        iq_cont = iq_cont * intensity_scale
-    
-    # Random noise addition
-    if noise_range is not None:
-        noise_scale = np.random.uniform(*noise_range)
-        background = np.random.randn(len(iq_cont)) * noise_scale
-        iq_cont = iq_cont + background
-    
-    # Random masking
-    if mask_prob is not None:
-        mask = np.random.rand(len(iq_cont)) > mask_prob
-        iq_cont = iq_cont * mask
-    
-    # Clipping
-    iq_cont = np.clip(iq_cont, a_min=0.0, a_max=None)
-    
-    return {'q': q_cont, 'iq': iq_cont}
 
 def calculate_crystal_descriptors(structure_name, cif_string, species_list, descriptor_params, debug=False):
     """
@@ -447,34 +402,34 @@ def worker(input_queue, eval_files_dir, done_queue):
                     'index': task['index'],
                     'rep': task['rep'],
                     'descriptors': {
-                        #'xrd_gen': calculate_xrd(task['name'], cif_string, task['xrd_parameters'], task['debug']),
-                        'xrd_gen_clean': augment_xrd_from_cif(
+                        'xrd_clean_from_gen': disc_to_cont_xrd_from_cif(
                             cif_string,
                             structure_name = task['name'],
-                            wavelength = task['xrd_parameters']['wavelength'],
+                            wavelength = task['xrd_parameters']['wavelength'], # TODO make independent
                             qmin = task['xrd_parameters']['qmin'],
                             qmax = task['xrd_parameters']['qmax'],
                             qstep = task['xrd_parameters']['qstep'],
-                            fwhm_range = (task['xrd_parameters']['fwhm'], task['xrd_parameters']['fwhm']),
+                            fwhm_range = (0.01, 0.01),
+                            eta_range = (0.5, 0.5),
                             noise_range = None,
                             intensity_scale_range = None,
                             mask_prob = None,
                             debug = task['debug'],
                         ),
-                        'xrd_sample_clean': augment_xrd_from_cif(
+                        'xrd_clean_from_sample': disc_to_cont_xrd_from_cif(
                             task['original_cif'],
                             structure_name = task['name'],
-                            wavelength = task['xrd_parameters']['wavelength'],
+                            wavelength = task['xrd_parameters']['wavelength'], # TODO make independent
                             qmin = task['xrd_parameters']['qmin'],
                             qmax = task['xrd_parameters']['qmax'],
                             qstep = task['xrd_parameters']['qstep'],
-                            fwhm_range = (task['xrd_parameters']['fwhm'], task['xrd_parameters']['fwhm']),
+                            fwhm_range = (0.01, 0.01),
+                            eta_range = (0.5, 0.5),
                             noise_range = None,
                             intensity_scale_range = None,
                             mask_prob = None,
                             debug = task['debug'],
                         ),
-                        'xrd_sample_input': task['xrd_cont_from_sample'],
                         'soap_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['SOAP'],
                         'acsf_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['ACSF'],
                     },
@@ -539,7 +494,7 @@ def save_evaluation(eval_result, structure_name, repetition_num, eval_files_dir)
             os.remove(temp_filename)  # Clean up incomplete temporary file
         raise IOError(f"Failed to save evaluation for {structure_name} (rep {repetition_num}): {e}")
 
-def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, debug_max, override, condition_with_mlp_emb, condition_with_cl_emb, zero_cond, temperature, top_k, augment_param_dict, cl_model_ckpt, **kwargs):
+def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_workers, debug_max, override, zero_cond, temperature, top_k, augment_param_dict, **kwargs):
     """
     Processes a dataset, generates tokenized CIF prompts, and dispatches tasks to worker processes.
 
@@ -556,13 +511,10 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
         num_workers (int): Number of worker processes that will consume tasks from the input queue.
         debug_max (int, optional): Maximum number of samples to process in debug mode.
         override (bool): If True, ignores check of exisiting files.
-        condition_with_mlp_emb (bool): If True, conditions the generations on the XRD patterns.
-        condition_with_cl_emb (bool): If True, conditions the generations on the CL embeddings.
         zero_cond (bool): If True, conditions are replaced by zero embeddings.
         temperature (float):
         top_k (int): 
         augment_param_dict (dict):
-        cl_model_ckpt (str):
         **kwargs: Additional keyword arguments, including:
             - 'num_reps' (int): Number of repetitions for generating new sequences for each sample.
             - 'add_composition' (bool): Whether to include composition information in the prompt.
@@ -580,7 +532,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
     """
     
     # Load the test dataset from the HDF5 file, including necessary features like CIF, XRD
-    test_dataset = DeciferDataset(h5_test_path, ["cif_name", "cif_tokenized", "xrd_cont.q", "xrd_cont.iq", "xrd_disc.q", "xrd_disc.iq", "cif_string", "spacegroup"])
+    test_dataset = DeciferDataset(h5_test_path, ["cif_name", "cif_tokenized", "xrd_disc.q", "xrd_disc.iq", "cif_string", "spacegroup"])
 
     # Set of existing evaluation files to avoid redundant processing
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl")))
@@ -599,17 +551,16 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
     # Tokenizer (for padding id)
     padding_id = Tokenizer().padding_id
 
-    # Load CL encoder
-    if condition_with_mlp_emb or condition_with_cl_emb:
-        assert cl_model_ckpt is not None, "No CLEncoder found"
-        checkpoint = torch.load(cl_model_ckpt)
-        model_args = checkpoint["model_args"]
-        xrd_encoder = CLEncoder(**model_args)
-        xrd_encoder.to(model.device)
-        xrd_encoder.load_state_dict(checkpoint["model"])
-
     # Iterate over the dataset samples
-    for i, (structure_name, sample, xrd_cont_q, xrd_cont_iq, xrd_disc_q, xrd_disc_iq, original_cif, original_spacegroup) in enumerate(test_dataset):
+    for i, data in enumerate(test_dataset):
+        # Extract
+        structure_name = data['cif_name']
+        sample = data['cif_tokenized']
+        xrd_disc_q = data['xrd_disc.q']
+        xrd_disc_iq = data['xrd_disc.iq']
+        original_cif = data['cif_string']
+        original_spacegroup = data['spacegroup']
+
         if i >= num_generations:
             break  # Stop processing if we've reached the generation limit (in debug mode)
         
@@ -628,36 +579,20 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
         
         if prompt is not None:
             # Generate token sequences from the model's output
-            
-            # TODO Add augmentation, not just noise
-            if augment_param_dict is not None:
-                xrd_cont_iq = augment_xrd(
-                    xrd_disc_q.unsqueeze(0).numpy(), 
-                    xrd_disc_iq.unsqueeze(0).numpy(),
-                    qmin = kwargs['xrd_parameters']['qmin'],
-                    qmax = kwargs['xrd_parameters']['qmax'],
-                    qstep = kwargs['xrd_parameters']['qstep'],
-                    **augment_param_dict
-                ).squeeze(0)
-            #if add_noise is not None:
-            #    if add_noise >= 1.0:
-            #        xrd_cont_iq = torch.randn_like(xrd_cont_iq)
-            #    else:
-            #        xrd_cont_iq += torch.randn_like(xrd_cont_iq) * add_noise
-                #xrd_cont_iq /= torch.max(xrd_cont_iq)
-                #xrd_cont_iq[xrd_cont_iq < 0] = 0.0
+            xrd_dirty_cont_from_sample = disc_to_cont_xrd(
+                xrd_disc_q.unsqueeze(0), 
+                xrd_disc_iq.unsqueeze(0),
+                qmin = kwargs['xrd_parameters']['qmin'], # TODO make these independent of the metadata by using q in conditioning
+                qmax = kwargs['xrd_parameters']['qmax'],
+                qstep = kwargs['xrd_parameters']['qstep'],
+                **augment_param_dict
+            )
 
-            if condition_with_mlp_emb:
-                cond_vec = xrd_cont_iq.to(model.device).unsqueeze(0)
-                if zero_cond:
-                    cond_vec = torch.zeros_like(cond_vec).to(model.device)
-            elif condition_with_cl_emb:
-                xrd_cl_emb = xrd_encoder.enc(xrd_cont_iq.to(model.device)).unsqueeze(0)
-                cond_vec = xrd_cl_emb.to(model.device).unsqueeze(0)
-                if zero_cond:
-                    cond_vec = torch.zeros_like(cond_vec).to(model.device)
-            else:
-                cond_vec = None
+            cond_vec = xrd_dirty_cont_from_sample['iq'].to(model.device)
+
+            if zero_cond: # TODO deprecate
+                cond_vec = torch.zeros_like(cond_vec).to(model.device)
+
             token_ids = model.generate_batched_reps(prompt, max_new_tokens=kwargs['max_new_tokens'], cond_vec=cond_vec, start_indices_batch=[[0]], temperature=temperature, top_k=top_k).cpu().numpy()
             token_ids = [ids[ids != padding_id] for ids in token_ids]  # Remove padding tokens
         else:
@@ -671,9 +606,10 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
                 'index': i,
                 'rep': rep_num,
                 'xrd_parameters': kwargs['xrd_parameters'],
-                'xrd_cont_from_sample': {'q': xrd_cont_q.numpy(), 'iq': xrd_cont_iq.numpy()},
-                'xrd_disc_from_sample': {'q': xrd_disc_q.numpy(), 'iq': xrd_disc_iq.numpy()},
-                #'xrd_cl_emb': xrd_cl_emb.numpy(),
+                #'xrd_cont_from_sample': {'q': xrd_cont_q.numpy(), 'iq': xrd_cont_iq.numpy()},
+                'xrd_disc_from_sample': {'q': xrd_disc_q, 'iq': xrd_disc_iq},
+                'xrd_dirty_cont_from_sample': xrd_dirty_cont_from_sample,
+                #
                 'desc_parameters': kwargs['desc_parameters'],
                 'species': kwargs['species'],
                 'dataset': kwargs['dataset_name'],
@@ -793,6 +729,7 @@ def main():
     parser.add_argument('--top-k', type=int, default=None, help='')
     parser.add_argument('--add-noise', type=float, default=None, help='')
     parser.add_argument('--add-broadening', type=float, default=None, help='')
+    parser.add_argument('--default_fwhm', type=float, default=0.01, help='')
 
     # Argument parsing for required and optional arguments
     parser.add_argument('--soap-r_cut', type=float, default=None, help='SOAP: Cutoff radius.')
@@ -818,6 +755,7 @@ def main():
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             model = load_model_from_checkpoint(ckpt_path, device)
             model.eval()
+            print(model)
         else:
             print(f"Checkpoint not found at {ckpt_path}")
             sys.exit(1)
@@ -874,9 +812,6 @@ def main():
     if args.acsf_periodic is not None:
         metadata['descriptors']['acsf']['periodic'] = args.acsf_periodic
 
-    # CL encoder
-    cl_model_ckpt = metadata['cl_embeddings']['model_path']
-
     # Augmentation parameters
     if args.add_noise is not None:
         noise_range = (args.add_noise, args.add_noise)
@@ -886,10 +821,11 @@ def main():
     if args.add_broadening is not None:
         fwhm_range = (args.add_broadening, args.add_broadening)
     else:
-        fwhm_range = (metadata['xrd']['fwhm'], metadata['xrd']['fwhm'])
+        fwhm_range = (args.default_fwhm, args.default_fwhm)
 
     augment_param_dict = {
         'fwhm_range': fwhm_range,
+        'eta_range': (0.5, 0.5),
         'noise_range': noise_range,
         'intensity_scale_range': None,
         'mask_prob': None,
@@ -946,13 +882,10 @@ def main():
             desc_parameters=metadata['descriptors'],
             species=metadata['species'],
             override=args.override,
-            condition_with_mlp_emb=args.condition_with_mlp_emb,
-            condition_with_cl_emb=args.condition_with_cl_emb,
             zero_cond=args.zero_cond,
             temperature=args.temperature,
             top_k=args.top_k,
             augment_param_dict=augment_param_dict,
-            cl_model_ckpt=cl_model_ckpt,
         )
 
         if num_send > 0:
