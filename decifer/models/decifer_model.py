@@ -49,7 +49,7 @@ class DeciferConfig:
     condition_with_cl_emb: bool = False
     boundary_masking: bool = True
     cl_model_ckpt: str = None
-    cond_hidden_size: int = 256
+    cond_hidden_size: int = 512
 
 class LayerNorm(nn.Module):
 

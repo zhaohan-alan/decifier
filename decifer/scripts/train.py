@@ -73,17 +73,18 @@ class TrainConfig:
     condition_with_mlp_emb: bool = False
     condition_with_cl_emb: bool = False
     boundary_masking: bool = True
+    cond_hidden_size: int = 512
 
     # Augmentation at training time
-    fwhm_range_min: float = 0.001 
+    fwhm_range_min: float = 0.01 
     fwhm_range_max: float = 0.5
     eta_range_min: float = 0.5
     eta_range_max: float = 0.5
     noise_range_min: float = 0.001
-    noise_range_max: float = 0.025
-    intensity_scale_range_min: float = 0.95
+    noise_range_max: float = 0.05
+    intensity_scale_range_min: float = 1.0
     intensity_scale_range_max: float = 1.0
-    mask_prob: float = 0.1
+    mask_prob: float = 0.0
 
     # AdamW optimizer
     learning_rate: float = 6e-4  # max learning rate
@@ -261,6 +262,7 @@ if __name__ == "__main__":
         condition_with_cl_emb=C.condition_with_cl_emb,
         boundary_masking=C.boundary_masking,
         cl_model_ckpt = cl_model_ckpt,
+        cond_hidden_size = C.cond_hidden_size,
     )
 
     if C.init_from == "scratch":
