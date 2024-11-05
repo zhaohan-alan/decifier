@@ -2,6 +2,9 @@
 decifer/data/ 
 decifer/logs/
 
+# Ignore egg folders
+**/*.egg-info/
+
 # Ignore pycache and notebook checkpoints
 **/__pycache__/
 **/.ipynb_checkpoints/
