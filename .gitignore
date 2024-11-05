@@ -8,6 +8,13 @@ decifer/logs/
 # Ignore .npz files
 **/*.npz
 
+# Ignore data
+**/*.pkl.gz
+**/*.cif
+**/*.h5
+**/*.json
+**/*.log*
+
 # Ignore pycache and notebook checkpoints
 **/__pycache__/
 **/.ipynb_checkpoints/
