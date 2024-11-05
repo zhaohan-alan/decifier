@@ -1,0 +1,908 @@
+#!/usr/bin/env python3
+
+import re
+import math
+import random
+from typing import Optional, Tuple
+import torch
+import h5py
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from torch.utils.data import BatchSampler
+
+from pymatgen.analysis.local_env import CrystalNN
+from pymatgen.core import Composition, Structure
+from pymatgen.io.cif import CifParser, CifBlock
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+from pymatgen.symmetry.groups import SpaceGroup
+from pymatgen.core.operations import SymmOp
+
+from pymatgen.analysis.diffraction.xrd import XRDCalculator
+from pymatgen.core.structure import Structure
+
+import warnings
+warnings.filterwarnings('ignore')
+
+def print_hdf5_structure(file_path):
+    """
+    This function opens an HDF5 file, prints its structure (groups and datasets),
+    and allows access to the data.
+
+    Parameters:
+    file_path (str): Path to the HDF5 file.
+    """
+    try:
+        with h5py.File(file_path, 'r') as hdf_file:
+            # Recursive function to print group structure
+            def print_group(name, node):
+                if isinstance(node, h5py.Dataset):
+                    print(f"Dataset: {name}, Shape: {node.shape}, Dtype: {node.dtype}")
+                elif isinstance(node, h5py.Group):
+                    print(f"Group: {name}")
+                    
+            # Visit every node in the file and print details
+            hdf_file.visititems(print_group)
+
+            # Return the HDF5 file object to explore it further outside the function
+            return hdf_file
+    except Exception as e:
+        print(f"Error: {e}")
+
+def disc_to_cont_xrd_serial(
+    batch_q,
+    batch_iq,
+    qmin=0.0,
+    qmax=10.0,
+    qstep=0.01,
+    fwhm_range=(0.01, 0.5),
+    eta_range=(0.5, 0.5),  # Mixing range for pseudo-Voigt, 1.0 is fully Lorentzian
+    noise_range=(0.001, 0.05),
+    intensity_scale_range=(0.95, 1.0),
+    mask_prob=0.1,
+):
+    # Define the continuous Q grid as a torch tensor
+    q_cont = torch.arange(qmin, qmax, qstep)
+    augmented_patterns = []
+
+    for q, iq in zip(batch_q, batch_iq):
+        # Ensure q and iq are torch tensors
+        q = torch.tensor(q, dtype=torch.float32) if not isinstance(q, torch.Tensor) else q
+        iq = torch.tensor(iq, dtype=torch.float32) if not isinstance(iq, torch.Tensor) else iq
+
+        # Initialize intensities_continuous
+        iq_cont = torch.zeros_like(q_cont)
+        
+        # Sample a random FWHM and eta value for the pseudo-Voigt function
+        fwhm = torch.FloatTensor(1).uniform_(*fwhm_range).item()
+        eta = torch.FloatTensor(1).uniform_(*eta_range).item()
+        
+        # Convert FWHM to standard deviations for Gaussian and Lorentzian parts
+        sigma_gauss = fwhm / (2 * torch.sqrt(2 * torch.log(torch.tensor(2.0))))
+        gamma_lorentz = fwhm / 2
+
+        # Apply pseudo-Voigt broadening to the peaks
+        for q_peak, iq_peak in zip(q, iq):
+            if q_peak != 0:
+                # Gaussian component
+                gaussian_component = torch.exp(-0.5 * ((q_cont - q_peak) / sigma_gauss) ** 2)
+                # Lorentzian component
+                lorentzian_component = 1 / (1 + ((q_cont - q_peak) / gamma_lorentz) ** 2)
+                # Combine to form pseudo-Voigt
+                pseudo_voigt = eta * lorentzian_component + (1 - eta) * gaussian_component
+                iq_cont += iq_peak * pseudo_voigt
+
+        # Normalize the continuous intensities
+        iq_cont /= (iq_cont.max() + 1e-16)
+        
+        # Random scaling of intensities
+        if intensity_scale_range is not None:
+            intensity_scale = torch.FloatTensor(1).uniform_(*intensity_scale_range).item()
+            iq_cont = iq_cont * intensity_scale
+        
+        # Random noise addition
+        if noise_range is not None:
+            noise_scale = torch.FloatTensor(1).uniform_(*noise_range).item()
+            background = torch.randn(len(iq_cont)) * noise_scale
+            iq_cont = iq_cont + background
+        
+        # Random masking
+        if mask_prob is not None:
+            mask = (torch.rand(len(iq_cont)) > mask_prob).float()
+            iq_cont = iq_cont * mask
+        
+        # Clipping
+        iq_cont = torch.clamp(iq_cont, min=0.0)
+        
+        # Append to list
+        augmented_patterns.append(iq_cont)
+
+    # Stack all augmented patterns into a torch tensor
+    xrd_augmented_batch = torch.stack(augmented_patterns)
+    
+    return xrd_augmented_batch
+
+def disc_to_cont_xrd_from_cif_serial(
+    cif_string,
+    structure_name='null',
+    wavelength='CuKa',
+    qmin=0.0,
+    qmax=10.0,
+    qstep=0.01,
+    fwhm_range=(0.01, 0.5),
+    eta_range=(0.5, 0.5),  # Mixing range for pseudo-Voigt, 1.0 is fully Lorentzian
+    noise_range=(0.001, 0.05),
+    intensity_scale_range=(0.95, 1.0),
+    mask_prob=0.1,
+    debug=False
+):
+    try:
+        # Parse the CIF string to get the structure
+        structure = Structure.from_str(cif_string, fmt="cif")
+        
+        # Initialize the XRD calculator using the specified wavelength
+        xrd_calculator = XRDCalculator(wavelength=wavelength)
+        
+        # Calculate the XRD pattern from the structure
+        xrd_pattern = xrd_calculator.get_pattern(structure)
+    
+    except Exception as e:
+        if debug:
+            print(f"Error processing {structure_name}: {e}")
+        return None
+    
+    # Convert 2θ (xrd_pattern.x) to Q (momentum transfer)
+    theta_radians = torch.tensor(np.radians(xrd_pattern.x / 2), dtype=torch.float32)
+    q_disc = 4 * np.pi * torch.sin(theta_radians) / xrd_calculator.wavelength
+    iq_disc = torch.tensor(xrd_pattern.y, dtype=torch.float32)
+    
+    # Define the continuous Q grid
+    q_cont = torch.arange(qmin, qmax, qstep, dtype=torch.float32)
+    iq_cont = torch.zeros_like(q_cont)
+    
+    # Sample a random FWHM and eta value for the pseudo-Voigt function
+    fwhm = torch.FloatTensor(1).uniform_(*fwhm_range).item()
+    eta = torch.FloatTensor(1).uniform_(*eta_range).item()
+    
+    # Convert FWHM to standard deviations for Gaussian and Lorentzian parts
+    sigma_gauss = fwhm / (2 * torch.sqrt(2 * torch.log(torch.tensor(2.0))))
+    gamma_lorentz = fwhm / 2
+
+    # Apply pseudo-Voigt broadening to the peaks
+    for q_peak, iq_peak in zip(q_disc, iq_disc):
+        if q_peak != 0:
+            # Gaussian component
+            gaussian_component = torch.exp(-0.5 * ((q_cont - q_peak) / sigma_gauss) ** 2)
+            # Lorentzian component
+            lorentzian_component = 1 / (1 + ((q_cont - q_peak) / gamma_lorentz) ** 2)
+            # Combine to form pseudo-Voigt
+            pseudo_voigt = eta * lorentzian_component + (1 - eta) * gaussian_component
+            iq_cont += iq_peak * pseudo_voigt
+
+    # Normalize the continuous intensities
+    iq_cont /= (iq_cont.max() + 1e-16)
+    
+    # Random scaling of intensities
+    if intensity_scale_range is not None:
+        intensity_scale = torch.FloatTensor(1).uniform_(*intensity_scale_range).item()
+        iq_cont = iq_cont * intensity_scale
+    
+    # Random noise addition
+    if noise_range is not None:
+        noise_scale = torch.FloatTensor(1).uniform_(*noise_range).item()
+        background = torch.randn(len(iq_cont)) * noise_scale
+        iq_cont = iq_cont + background
+    
+    # Random masking
+    if mask_prob is not None:
+        mask = (torch.rand(len(iq_cont)) > mask_prob).float()
+        iq_cont = iq_cont * mask
+    
+    # Clipping
+    iq_cont = torch.clamp(iq_cont, min=0.0)
+    
+    return {'q': q_cont, 'iq': iq_cont}
+
+def disc_to_cont_xrd(
+    batch_q,
+    batch_iq,
+    qmin: float = 0.0,
+    qmax: float = 10.0,
+    qstep: float = 0.01,
+    fwhm_range: Tuple[float, float] = (0.01, 0.5),
+    eta_range: Tuple[float, float] = (0.5, 0.5),  # Mixing range for pseudo-Voigt, 1.0 is fully Lorentzian
+    noise_range: Optional[Tuple[float, float]] = (0.001, 0.05),
+    intensity_scale_range: Optional[Tuple[float, float]] =(0.95, 1.0),
+    mask_prob: Optional[float] = 0.1,
+):
+    # Generate q_cont based on qmin, qmax, and qstep
+    q_cont = torch.arange(qmin, qmax, qstep)  # Shape: (num_q_points,)
+    batch_size, max_num_peaks = batch_q.shape
+    num_q_points = q_cont.shape[0]
+
+    # Sample random FWHM, eta, noise, and intensity scale values for each sample
+    fwhm = torch.empty(batch_size, 1, 1).uniform_(*fwhm_range)  # Shape: (batch_size, 1, 1)
+    eta = torch.empty(batch_size, 1, 1).uniform_(*eta_range)    # Shape: (batch_size, 1, 1)
+
+    # Apply intensity scaling to peak intensities
+    if intensity_scale_range is not None:
+        intensity_scale = torch.empty(batch_size, 1).uniform_(*intensity_scale_range)  # Shape: (batch_size, 1)
+        batch_iq = batch_iq * intensity_scale
+
+    # Convert FWHM to standard deviations
+    sigma_gauss = fwhm / (2 * torch.sqrt(2 * torch.log(torch.tensor(2.0))))
+    gamma_lorentz = fwhm / 2
+
+    # Expand dimensions for broadcasting
+    q_cont_expanded = q_cont.view(1, num_q_points, 1)            # Shape: (1, num_q_points, 1)
+    batch_q_expanded = batch_q.unsqueeze(1)                      # Shape: (batch_size, 1, max_num_peaks)
+    delta_q = q_cont_expanded - batch_q_expanded                 # Shape: (batch_size, num_q_points, max_num_peaks)
+
+    # Compute Gaussian and Lorentzian components
+    gaussian_component = torch.exp(-0.5 * (delta_q / sigma_gauss) ** 2)
+    lorentzian_component = 1 / (1 + (delta_q / gamma_lorentz) ** 2)
+    pseudo_voigt = eta * lorentzian_component + (1 - eta) * gaussian_component
+
+    # Apply peak intensities and filter out padded values
+    batch_iq_expanded = batch_iq.unsqueeze(1)                    # Shape: (batch_size, 1, max_num_peaks)
+    valid_peaks = (batch_q_expanded != 0).float()                # Shape: (batch_size, 1, max_num_peaks)
+    iq_cont = (pseudo_voigt * batch_iq_expanded * valid_peaks).sum(dim=2)  # Shape: (batch_size, num_q_points)
+
+    # Normalize
+    iq_cont /= (iq_cont.max(dim=1, keepdim=True)[0] + 1e-16)
+
+    # Add random noise
+    if noise_range is not None:
+        noise_scale = torch.empty(batch_size, 1).uniform_(*noise_range)  # Shape: (batch_size, 1)
+        noise = torch.randn(batch_size, num_q_points) * noise_scale
+        iq_cont += noise
+
+    # Apply random masking
+    if mask_prob is not None:
+        mask = (torch.rand(batch_size, num_q_points) > mask_prob).float()
+        iq_cont *= mask
+    
+    # Clip to ensure non-negative intensities
+    iq_cont = torch.clamp(iq_cont, min=0.0)
+
+    return {'q': q_cont, 'iq': iq_cont}
+
+def disc_to_cont_xrd_from_cif(
+    cif_string,
+    structure_name: str = 'null',
+    wavelength: str = 'CuKa',
+    qmin: float = 0.0,
+    qmax: float = 10.0,
+    qstep: float = 0.01,
+    fwhm_range: Tuple[float, float] = (0.01, 0.5),
+    eta_range: Tuple[float, float] = (0.5, 0.5),  # Mixing range for pseudo-Voigt, 1.0 is fully Lorentzian
+    noise_range: Optional[Tuple[float, float]] = (0.001, 0.05),
+    intensity_scale_range: Optional[Tuple[float, float]] =(0.95, 1.0),
+    mask_prob: Optional[float] = 0.1,
+    debug: bool = False
+):
+    try:
+        # Parse the CIF string to get the structure
+        structure = Structure.from_str(cif_string, fmt="cif")
+        
+        # Initialize the XRD calculator using the specified wavelength
+        xrd_calculator = XRDCalculator(wavelength=wavelength)
+        
+        # Calculate the XRD pattern from the structure
+        xrd_pattern = xrd_calculator.get_pattern(structure)
+    
+    except Exception as e:
+        if debug:
+            print(f"Error processing {structure_name}: {e}")
+        return None
+
+    # Convert 2θ (xrd_pattern.x) to Q (momentum transfer)
+    theta_radians = torch.tensor(np.radians(xrd_pattern.x / 2), dtype=torch.float32)
+    q_disc = 4 * np.pi * torch.sin(theta_radians) / xrd_calculator.wavelength
+    iq_disc = torch.tensor(xrd_pattern.y, dtype=torch.float32)
+    
+    # Apply intensity scaling to discrete peak intensities
+    if intensity_scale_range is not None:
+        intensity_scale = torch.empty(1).uniform_(*intensity_scale_range).item()
+        iq_disc *= intensity_scale
+
+    # Define the continuous Q grid
+    q_cont = torch.arange(qmin, qmax, qstep, dtype=torch.float32)
+    iq_cont = torch.zeros_like(q_cont)
+
+    # Sample a random FWHM, eta, noise scale, and intensity scale
+    fwhm = torch.empty(1).uniform_(*fwhm_range).item()
+    eta = torch.empty(1).uniform_(*eta_range).item()
+
+    # Convert FWHM to standard deviations for Gaussian and Lorentzian parts
+    sigma_gauss = fwhm / (2 * torch.sqrt(2 * torch.log(torch.tensor(2.0))))
+    gamma_lorentz = fwhm / 2
+
+    # Vectorized pseudo-Voigt broadening over all peaks
+    delta_q = q_cont.unsqueeze(1) - q_disc.unsqueeze(0)  # Shape: (len(q_cont), len(q_disc))
+    
+    # Gaussian and Lorentzian components
+    gaussian_component = torch.exp(-0.5 * (delta_q / sigma_gauss) ** 2)
+    lorentzian_component = 1 / (1 + (delta_q / gamma_lorentz) ** 2)
+    pseudo_voigt = eta * lorentzian_component + (1 - eta) * gaussian_component
+
+    # Apply peak intensities and sum over peaks
+    iq_cont = (pseudo_voigt * iq_disc).sum(dim=1)
+
+    # Normalize the continuous intensities
+    iq_cont /= (iq_cont.max() + 1e-16)
+    
+    # Add random noise
+    if noise_range is not None:
+        noise_scale = torch.empty(1).uniform_(*noise_range).item()
+        iq_cont += torch.randn_like(iq_cont) * noise_scale
+
+    # Apply random masking
+    if mask_prob is not None:
+        mask = (torch.rand_like(iq_cont) > mask_prob).float()
+        iq_cont *= mask
+
+    # Clip to ensure non-negative intensities
+    iq_cont = torch.clamp(iq_cont, min=0.0)
+
+    return {'q': q_cont.numpy(), 'iq': iq_cont.numpy()}
+
+class RandomBatchSampler(BatchSampler):
+    def __init__(self, sampler, batch_size, drop_last):
+        super().__init__(sampler, batch_size, drop_last)
+        self.sampler = sampler
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+
+    def __iter__(self):
+        # Each time __iter__ is called, radomize the batch indices
+        batch_indices = list(self.sampler)
+        random.shuffle(batch_indices)
+
+        # Return batches of size batch_Size
+        for i in range(0, len(batch_indices), self.batch_size):
+            yield batch_indices[i:i + self.batch_size]
+
+def get_atomic_props_block(composition, oxi=False):
+    noble_vdw_radii = {
+        "He": 1.40,
+        "Ne": 1.54,
+        "Ar": 1.88,
+        "Kr": 2.02,
+        "Xe": 2.16,
+        "Rn": 2.20,
+    }
+
+    allen_electronegativity = {
+        "He": 4.16,
+        "Ne": 4.79,
+        "Ar": 3.24,
+    }
+
+    def _format(val):
+        return f"{float(val): .4f}"
+
+    def _format_X(elem):
+        if math.isnan(elem.X) and str(elem) in allen_electronegativity:
+            return allen_electronegativity[str(elem)]
+        return _format(elem.X)
+
+    def _format_radius(elem):
+        if elem.atomic_radius is None and str(elem) in noble_vdw_radii:
+            return noble_vdw_radii[str(elem)]
+        return _format(elem.atomic_radius)
+
+    props = {str(el): (_format_X(el), _format_radius(el), _format(el.average_ionic_radius))
+             for el in sorted(composition.elements)}
+
+    data = {}
+    data["_atom_type_symbol"] = list(props)
+    data["_atom_type_electronegativity"] = [v[0] for v in props.values()]
+    data["_atom_type_radius"] = [v[1] for v in props.values()]
+    # use the average ionic radius
+    data["_atom_type_ionic_radius"] = [v[2] for v in props.values()]
+
+    loop_vals = [
+        "_atom_type_symbol",
+        "_atom_type_electronegativity",
+        "_atom_type_radius",
+        "_atom_type_ionic_radius"
+    ]
+
+    if oxi:
+        symbol_to_oxinum = {str(el): (float(el.oxi_state), _format(el.ionic_radius)) for el in sorted(composition.elements)}
+        data["_atom_type_oxidation_number"] = [v[0] for v in symbol_to_oxinum.values()]
+        # if we know the oxidation state of the element, use the ionic radius for the given oxidation state
+        data["_atom_type_ionic_radius"] = [v[1] for v in symbol_to_oxinum.values()]
+        loop_vals.append("_atom_type_oxidation_number")
+
+    loops = [loop_vals]
+
+    return str(CifBlock(data, loops, "")).replace("data_\n", "")
+
+def extract_species(cif_str):
+    return list(set(Composition(extract_formula_nonreduced(cif_str)).as_dict().keys()))
+
+def extract_composition(cif_string):
+    return Composition(extract_formula_nonreduced(cif_string)).as_dict()
+
+def add_atomic_props_block(cif_str, oxi=False):
+    comp = Composition(extract_formula_nonreduced(cif_str))
+
+    block = get_atomic_props_block(composition=comp, oxi=oxi)
+
+    # the hypothesis is that the atomic properties should be the first thing
+    #  that the model must learn to associate with the composition, since
+    #  they will determine so much of what follows in the file
+    pattern = r"_symmetry_space_group_name_H-M"
+    match = re.search(pattern, cif_str)
+
+    if match:
+        start_pos = match.start()
+        modified_cif = cif_str[:start_pos] + block + "\n" + cif_str[start_pos:]
+        return modified_cif
+    else:
+        raise Exception(f"Pattern not found: {cif_str}")
+
+def replace_symmetry_loop_with_P1(cif_str):
+    start = cif_str.find("_symmetry_equiv_pos_site_id")
+    end = cif_str.find("loop_", start+1)
+
+    replacement = """_symmetry_equiv_pos_site_id\n_symmetry_equiv_pos_as_xyz\n1  'x, y, z'\n"""
+
+    return cif_str.replace(cif_str[start:end], replacement)
+
+def reinstate_symmetry_loop(cif_str, space_group_symbol):
+    space_group = SpaceGroup(space_group_symbol)
+    symmetry_ops = space_group.symmetry_ops
+
+    loops = []
+    data = {}
+    symmops = []
+    for op in symmetry_ops:
+        v = op.translation_vector
+        symmops.append(SymmOp.from_rotation_and_translation(op.rotation_matrix, v))
+
+    try:
+        ops = [op.as_xyz_string() for op in symmops]
+    except:
+        ops = [op.as_xyz_str() for op in symmops]
+    data["_symmetry_equiv_pos_site_id"] = [f"{i}" for i in range(1, len(ops) + 1)]
+    data["_symmetry_equiv_pos_as_xyz"] = ops
+
+    loops.append(["_symmetry_equiv_pos_site_id", "_symmetry_equiv_pos_as_xyz"])
+
+    symm_block = str(CifBlock(data, loops, "")).replace("data_\n", "")
+
+    pattern = r"(loop_\n_symmetry_equiv_pos_site_id\n_symmetry_equiv_pos_as_xyz\n1  'x, y, z')"
+    cif_str_updated = re.sub(pattern, symm_block, cif_str)
+
+    return cif_str_updated
+
+def remove_cif_header(cif_str):
+    lines = cif_str.split('\n')
+    cif_lines = []
+    for line in lines:
+        line = line.strip()
+        if len(line) > 0 and not line.startswith("#") and "pymatgen" not in line:
+            cif_lines.append(line)
+
+    cif_str = '\n'.join(cif_lines)
+    return cif_str
+
+OXI_LOOP_PATTERN = r'loop_[^l]*(?:l(?!oop_)[^l]*)*_atom_type_oxidation_number[^l]*(?:l(?!oop_)[^l]*)*'
+OXI_STATE_PATTERN = r'(\n\s+)([A-Za-z]+)[\d.+-]*'
+
+# Regular expression to match occupancy values
+OCCU_PATTERN = re.compile(
+        r'(_atom_site_type_symbol[\s\S]+?_atom_site_occupancy\s+)((?:\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\d+\.\d+\s*)+)', re.MULTILINE)
+
+def remove_oxidation_loop(cif_str):
+    cif_str = re.sub(OXI_LOOP_PATTERN, '', cif_str)
+    cif_str = re.sub(OXI_STATE_PATTERN, r'\1\2', cif_str)
+    return cif_str
+
+def format_occupancies(cif_str, decimal_places=4):
+
+    # Search for the occupancy block
+    occupancy_block_match = OCCU_PATTERN.search(cif_str)
+    
+    if occupancy_block_match:
+        # Extract header and atoms
+        header = occupancy_block_match.group(1)
+        atoms = occupancy_block_match.group(2).strip().split('\n')
+        
+        # Check occupancies and format them
+        formatted_atoms = []
+        occupancies = []
+        for atom in atoms:
+            parts = atom.split()
+            occupancy = float(parts[-1])
+            occupancies.append(occupancy)
+            formatted_occupancy = "{:.{}f}".format(occupancy,decimal_places)
+            formatted_atoms.append('  '.join(parts[:-1]) + f"  {formatted_occupancy}")
+
+        formatted_block = header + '\n  '.join(formatted_atoms)
+        cif_str = OCCU_PATTERN.sub(formatted_block, cif_str)
+
+    return cif_str
+
+def extract_formula_units(cif_str):
+    return extract_numeric_property(cif_str, "_cell_formula_units_Z", numeric_type=int)
+
+def extract_space_group_symbol(cif_str):
+    match = re.search(r"_symmetry_space_group_name_H-M\s+('([^']+)'|(\S+))", cif_str)
+    if match:
+        return match.group(2) if match.group(2) else match.group(3)
+    raise Exception(f"could not extract space group from:\n{cif_str}")
+
+def extract_numeric_property(cif_str, prop, numeric_type=float):
+    match = re.search(rf"{prop}\s+([.0-9]+)", cif_str)
+    if match:
+        return numeric_type(match.group(1))
+    raise Exception(f"could not find {prop} in:\n{cif_str}")
+
+def extract_data_formula(cif_str):
+    #match = re.search(r"data_([A-Za-z0-9]+)\n", cif_str)
+    match = re.search(r"data_([A-Za-z0-9.()]+)\n", cif_str) # Including paranthesis
+    if match:
+        return match.group(1)
+    raise Exception(f"could not find data_ in:\n{cif_str}")
+
+def extract_formula_nonreduced(cif_str):
+    match = re.search(r"_chemical_formula_sum\s+('([^']+)'|(\S+))", cif_str)
+    if match:
+        return match.group(2) if match.group(2) else match.group(3)
+    raise Exception(f"could not extract _chemical_formula_sum value from:\n{cif_str}")
+
+def replace_data_formula_with_nonreduced_formula(cif_str):
+    pattern = r"_chemical_formula_sum\s+(.+)\n"
+    pattern_2 = r"(data_)(.*?)(\n)"
+    match = re.search(pattern, cif_str)
+    if match:
+        chemical_formula = match.group(1)
+        chemical_formula = chemical_formula.replace("'", "").replace(" ", "")
+
+        modified_cif = re.sub(pattern_2, r'\1' + chemical_formula + r'\3', cif_str)
+
+        return modified_cif
+    else:
+        raise Exception(f"Chemical formula not found {cif_str}")
+
+def round_numbers(cif_str, decimal_places=4):
+    # Pattern to match a floating point number in the CIF file
+    # It also matches numbers in scientific notation
+    # pattern = r"[-+]?\d*\.\d+([eE][-+]?\d+)?"
+    pattern = r"[-+]?\d*\.?\d+([eE][-+]?\d+)?" # Including occupancies
+
+    # Function to round the numbers
+    def round_number(match):
+        number_str = match.group()
+        number = float(number_str)
+        # Check if number of digits after decimal point is less than 'decimal_places'
+        if len(number_str.split('.')[-1]) <= decimal_places:
+            return number_str
+        rounded = round(number, decimal_places)
+        return format(rounded, '.{}f'.format(decimal_places))
+
+    # Replace all occurrences of the pattern using a regex sub operation
+    cif_string_rounded = re.sub(pattern, round_number, cif_str)
+
+    return cif_string_rounded
+
+def get_unit_cell_volume(a, b, c, alpha_deg, beta_deg, gamma_deg):
+    alpha_rad = math.radians(alpha_deg)
+    beta_rad = math.radians(beta_deg)
+    gamma_rad = math.radians(gamma_deg)
+
+    volume = (a * b * c * math.sqrt(1 - math.cos(alpha_rad) ** 2 - math.cos(beta_rad) ** 2 - math.cos(gamma_rad) ** 2 +
+                                    2 * math.cos(alpha_rad) * math.cos(beta_rad) * math.cos(gamma_rad)))
+
+    return volume
+
+def extract_volume(cif_str):
+    return extract_numeric_property(cif_str, "_cell_volume")
+
+
+def bond_length_reasonableness_score(cif_str, tolerance=0.32, h_factor=2.5):
+    """
+    If a bond length is 30% shorter or longer than the sum of the atomic radii, the score is lower.
+    """
+    structure = Structure.from_str(cif_str, fmt="cif")
+    crystal_nn = CrystalNN()
+
+    min_ratio = 1 - tolerance
+    max_ratio = 1 + tolerance
+
+    # calculate the score based on bond lengths and covalent radii
+    score = 0
+    bond_count = 0
+    for i, site in enumerate(structure):
+        bonded_sites = crystal_nn.get_nn_info(structure, i)
+        for connected_site_info in bonded_sites:
+            j = connected_site_info['site_index']
+            if i == j:  # skip if they're the same site
+                continue
+            connected_site = connected_site_info['site']
+            bond_length = site.distance(connected_site)
+
+            is_hydrogen_bond = "H" in [site.specie.symbol, connected_site.specie.symbol]
+
+            electronegativity_diff = abs(site.specie.X - connected_site.specie.X)
+            """
+            According to the Pauling scale, when the electronegativity difference 
+            between two bonded atoms is less than 1.7, the bond can be considered 
+            to have predominantly covalent character, while a difference greater 
+            than or equal to 1.7 indicates that the bond has significant ionic 
+            character.
+            """
+            if electronegativity_diff >= 1.7:
+                # use ionic radii
+                if site.specie.X < connected_site.specie.X:
+                    expected_length = site.specie.average_cationic_radius + connected_site.specie.average_anionic_radius
+                else:
+                    expected_length = site.specie.average_anionic_radius + connected_site.specie.average_cationic_radius
+            else:
+                expected_length = site.specie.atomic_radius + connected_site.specie.atomic_radius
+
+            bond_ratio = bond_length / expected_length
+
+            # penalize bond lengths that are too short or too long;
+            #  check if bond involves hydrogen and adjust tolerance accordingly
+            if is_hydrogen_bond:
+                if bond_ratio < h_factor:
+                    score += 1
+            else:
+                if min_ratio < bond_ratio < max_ratio:
+                    score += 1
+
+            bond_count += 1
+
+    normalized_score = score / bond_count
+
+    return normalized_score
+
+def is_space_group_consistent(cif_str):
+    structure = Structure.from_str(cif_str, fmt="cif")
+    try:
+        parser = CifParser.from_string(cif_str)
+    except:
+        parser = CifParser.from_str(cif_str)
+    cif_data = parser.as_dict()
+
+    # Extract the stated space group from the CIF file
+    stated_space_group = cif_data[list(cif_data.keys())[0]]['_symmetry_space_group_name_H-M']
+
+    # Analyze the symmetry of the structure
+    spacegroup_analyzer = SpacegroupAnalyzer(structure, symprec=0.1)
+
+    # Get the detected space group
+    detected_space_group = spacegroup_analyzer.get_space_group_symbol()
+
+    # Check if the detected space group matches the stated space group
+    is_match = stated_space_group.strip() == detected_space_group.strip()
+
+    return is_match
+
+def is_formula_consistent(cif_str):
+    try:
+        parser = CifParser.from_string(cif_str)
+    except:
+        parser = CifParser.from_str(cif_str)
+
+    cif_data = parser.as_dict()
+
+    formula_data = Composition(extract_data_formula(cif_str))
+    formula_sum = Composition(cif_data[list(cif_data.keys())[0]]["_chemical_formula_sum"])
+    formula_structural = Composition(cif_data[list(cif_data.keys())[0]]["_chemical_formula_structural"])
+
+    return formula_data.reduced_formula == formula_sum.reduced_formula == formula_structural.reduced_formula
+
+def is_atom_site_multiplicity_consistent(cif_str):
+    # Parse the CIF string
+    try:
+        parser = CifParser.from_string(cif_str)
+    except:
+        parser = CifParser.from_str(cif_str)
+    cif_data = parser.as_dict()
+
+    # Extract the chemical formula sum from the CIF data
+    formula_sum = cif_data[list(cif_data.keys())[0]]["_chemical_formula_sum"]
+
+    # Convert the formula sum into a dictionary
+    expected_atoms = Composition(formula_sum).as_dict()
+
+    # Count the atoms provided in the _atom_site_type_symbol section
+    actual_atoms = {}
+    for key in cif_data:
+        if "_atom_site_type_symbol" in cif_data[key] and "_atom_site_symmetry_multiplicity" in cif_data[key]:
+            for atom_type, multiplicity in zip(cif_data[key]["_atom_site_type_symbol"],
+                                               cif_data[key]["_atom_site_symmetry_multiplicity"]):
+                
+                if atom_type in actual_atoms:
+                    actual_atoms[atom_type] += int(multiplicity)
+                else:
+                    actual_atoms[atom_type] = int(multiplicity)
+
+    return expected_atoms == actual_atoms
+
+def is_sensible(cif_str, length_lo=0.5, length_hi=1000., angle_lo=10., angle_hi=170.):
+    
+    try: 
+        Structure.from_str(cif_str, fmt="cif")
+    except:
+        return False
+    
+    cell_length_pattern = re.compile(r"_cell_length_[abc]\s+([\d\.]+)")
+    cell_angle_pattern = re.compile(r"_cell_angle_(alpha|beta|gamma)\s+([\d\.]+)")
+
+    cell_lengths = cell_length_pattern.findall(cif_str)
+    for length_str in cell_lengths:
+        length = float(length_str)
+        if length < length_lo or length > length_hi:
+            return False
+
+    cell_angles = cell_angle_pattern.findall(cif_str)
+    for _, angle_str in cell_angles:
+        angle = float(angle_str)
+        if angle < angle_lo or angle > angle_hi:
+            return False
+
+    return True
+
+def is_valid(cif_str, bond_length_acceptability_cutoff=1.0):
+    if not is_formula_consistent(cif_str):
+        return False
+    if not is_atom_site_multiplicity_consistent(cif_str):
+        return False
+
+    bond_length_score = bond_length_reasonableness_score(cif_str)
+    if bond_length_score < bond_length_acceptability_cutoff:
+         return False
+    if not is_space_group_consistent(cif_str):
+        return False
+    return True
+
+def evaluate_syntax_validity(cif_str, bond_length_acceptability_cutoff=1.0):
+    validity_dict = {
+        "formula": False,
+        "site_multiplicity": False, 
+        "bond_length": False, 
+        "spacegroup": False,
+    }
+    if is_formula_consistent(cif_str):
+        validity_dict["formula"] = True
+    if is_atom_site_multiplicity_consistent(cif_str):
+        validity_dict["site_multiplicity"] = True
+    bond_length_score = bond_length_reasonableness_score(cif_str)
+    if bond_length_score >= bond_length_acceptability_cutoff:
+        validity_dict["bond_length"] = True
+    if is_space_group_consistent(cif_str):
+        validity_dict["spacegroup"] = True
+    
+    return validity_dict
+
+def space_group_symbol_to_number(symbol):
+    # Dictionary mapping space group symbols to their corresponding numbers
+    space_group_mapping = {
+        "P1": 1, "P-1": 2, "P2": 3, "P21": 4, "C2": 5, "Pm": 6, "Pc": 7, "Cm": 8, "Cc": 9,
+        "P2/m": 10, "P21/m": 11, "C2/m": 12, "P2/c": 13, "P21/c": 14, "C2/c": 15,
+        "P222": 16, "P2221": 17, "P21212": 18, "P212121": 19, "C2221": 20, "C222": 21,
+        "F222": 22, "I222": 23, "I212121": 24, "Pmm2": 25, "Pmc21": 26, "Pcc2": 27,
+        "Pma2": 28, "Pca21": 29, "Pnc2": 30, "Pmn21": 31, "Pba2": 32, "Pna21": 33,
+        "Pnn2": 34, "Cmm2": 35, "Cmc21": 36, "Ccc2": 37, "Amm2": 38, "Abm2": 39,
+        "Ama2": 40, "Aba2": 41, "Fmm2": 42, "Fdd2": 43, "Imm2": 44, "Iba2": 45,
+        "Ima2": 46, "Pmmm": 47, "Pnnn": 48, "Pccm": 49, "Pban": 50, "Pmma": 51,
+        "Pnna": 52, "Pmna": 53, "Pcca": 54, "Pbam": 55, "Pccn": 56, "Pbcm": 57,
+        "Pnnm": 58, "Pmmn": 59, "Pbcn": 60, "Pbca": 61, "Pnma": 62, "Cmcm": 63,
+        "Cmca": 64, "Cmmm": 65, "Cccm": 66, "Cmme": 67, "Ccce": 68, "Fmmm": 69,
+        "Fddd": 70, "Immm": 71, "Ibam": 72, "Ibca": 73, "Imma": 74, "P4": 75,
+        "P41": 76, "P42": 77, "P43": 78, "I4": 79, "I41": 80, "P-4": 81, "I-4": 82,
+        "P4/m": 83, "P42/m": 84, "P4/n": 85, "P42/n": 86, "I4/m": 87, "I41/a": 88,
+        "P422": 89, "P4212": 90, "P4122": 91, "P41212": 92, "P4222": 93, "P42212": 94,
+        "P4322": 95, "P43212": 96, "I422": 97, "I4122": 98, "P4mm": 99, "P4bm": 100,
+        "P42cm": 101, "P42nm": 102, "P4cc": 103, "P4nc": 104, "P42mc": 105, "P42bc": 106,
+        "I4mm": 107, "I4cm": 108, "I41md": 109, "I41cd": 110, "P-42m": 111, "P-42c": 112,
+        "P-421m": 113, "P-421c": 114, "P-4m2": 115, "P-4c2": 116, "P-4b2": 117, "P-4n2": 118,
+        "I-4m2": 119, "I-4c2": 120, "I-42m": 121, "I-42d": 122, "P4/mmm": 123, "P4/mcc": 124,
+        "P4/nbm": 125, "P4/nnc": 126, "P4/mbm": 127, "P4/mnc": 128, "P4/nmm": 129, "P4/ncc": 130,
+        "I4/mmm": 131, "I4/mcm": 132, "I41/amd": 133, "I41/acd": 134, "P3": 143, "P31": 144,
+        "P32": 145, "R3": 146, "P-3": 147, "R-3": 148, "P312": 149, "P321": 150, "P3112": 151,
+        "P3121": 152, "P3212": 153, "P3221": 154, "R32": 155, "P3m1": 156, "P31m": 157,
+        "P3c1": 158, "P31c": 159, "R3m": 160, "R3c": 161, "P-31m": 162, "P-31c": 163,
+        "P-3m1": 164, "P-3c1": 165, "R-3m": 166, "R-3c": 167, "P6": 168, "P61": 169,
+        "P65": 170, "P62": 171, "P64": 172, "P63": 173, "P-6": 174, "P6/m": 175,
+        "P63/m": 176, "P622": 177, "P6122": 178, "P6522": 179, "P6222": 180, "P6422": 181,
+        "P6322": 182, "P6mm": 183, "P6cc": 184, "P63cm": 185, "P63mc": 186, "P-62m": 187,
+        "P-62c": 188, "P-6m2": 189, "P-6c2": 190, "P6/mmm": 191, "P6/mcc": 192, "P63/mcm": 193,
+        "P63/mmc": 194, "P23": 195, "F23": 196, "I23": 197, "P213": 198, "I213": 199,
+        "Pm-3": 200, "Pn-3": 201, "Fm-3": 202, "Fd-3": 203, "Im-3": 204, "Pa-3": 205,
+        "Ia-3": 206, "P432": 207, "P4232": 208, "F432": 209, "F4132": 210, "I432": 211,
+        "P4332": 212, "P4132": 213, "I4132": 214, "P-43m": 215, "F-43m": 216, "I-43m": 217,
+        "P-43n": 218, "F-43c": 219, "I-43d": 220, "Pm-3m": 221, "Pn-3n": 222, "Pm-3n": 223,
+        "Pn-3m": 224, "Fm-3m": 225, "Fm-3c": 226, "Fd-3m": 227, "Fd-3c": 228, "Im-3m": 229,
+        "Ia-3d": 230
+    }
+    
+    # Convert the space group symbol to the space group number
+    return space_group_mapping.get(symbol, None)
+
+def get_metrics(ckpt_path):
+    checkpoint = torch.load(ckpt_path, map_location='cpu')
+    metrics = checkpoint['metrics']
+    fname = '/'.join(ckpt_path.split('/')[:-1])
+    return metrics, fname
+
+def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=None, ymax=None, offset=0.02, plot_metrics=True, figsize=(10, 5)):
+    # Apply Seaborn style
+    sns.set_theme(style="whitegrid")
+    #plt.figure(figsize=figsize, dpi=150)
+    fig, ax_loss = plt.subplots(figsize=figsize, dpi=150)
+    text_positions = []
+
+    ax_loss.set(xlabel='Epoch', ylabel='Cross-Entropy Loss')
+
+    if xmin is not None or xmax is not None:
+        ax_loss.set_xlim(xmin, xmax)
+    if ymin is not None or ymax is not None:
+        ax_loss.set_ylim(ymin, ymax)
+    if ylog:
+        ax_loss.set_yscale('log')
+    if xlog:
+        ax_loss.set_xscale('log')
+    
+    # Seaborn grid
+    ax_loss.grid(alpha=0.4, which="both")
+
+    for path in paths:
+        metrics, fname = get_metrics(path)
+        legend_fname = '/'.join(fname.split("/")[-2:])
+        
+        # Convert lists to numpy arrays for plotting
+        losses_train = np.array(metrics['train_losses'])
+        losses_val = np.array(metrics['val_losses'])
+        epochs = np.array(metrics['epoch_losses'])
+        
+        # Train and validation loss plots
+        p = sns.lineplot(x=epochs, y=losses_train, label=f'{legend_fname} [Train]', ax=ax_loss, linewidth=2)
+        sns.lineplot(x=epochs, y=losses_val, label=f'{legend_fname} [Validation]', ax=ax_loss, linewidth=2, linestyle='--', color=p.get_lines()[-1].get_color())
+        
+        # Find the minimum value in losses_val and its corresponding epoch
+        try:
+            val_line_min = epochs[np.argmin(losses_val)]
+            min_loss_val = np.min(losses_val)
+        
+            # Plot the dotted line
+            ax_loss.plot([val_line_min, ax_loss.get_xlim()[1]], [min_loss_val, min_loss_val],
+                        c=p.get_lines()[-1].get_color(), ls=':', alpha=1.0)
+
+            # Adjust text position if overlapping
+            text_x = ax_loss.get_xlim()[1]
+            text_y = min_loss_val
+        
+            vert_align = 'bottom'
+            for pos in text_positions:
+                if abs(pos[1] - text_y) < offset:  # Check for overlap
+                    vert_align = 'top'
+                else:
+                    vert_align = 'bottom'
+
+            # Add text at the end of the dotted line
+            ax_loss.text(text_x, text_y, f'{min_loss_val:.4f}', 
+                    verticalalignment=vert_align, horizontalalignment='right', color=p.get_lines()[-1].get_color(),
+                    fontsize=10)
+            text_positions.append((text_x, text_y))
+        except Exception as e:
+            print(f"Error plotting validation loss for {legend_fname}: {e}")
+            pass
+     
+    # Add the legend
+    ax_loss.legend(fontsize=8)
+    
+    # Make the layout tight
+    fig.tight_layout()
+
+    # Show the plot
+    plt.show()
+

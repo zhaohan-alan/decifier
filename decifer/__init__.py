@@ -1,2 +1,1 @@
-from .scripts import *
-from .models import *
+from . import *

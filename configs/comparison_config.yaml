@@ -1,0 +1,14 @@
+output_folder: "experiment_test"
+debug_max: null
+use_deprecated_keys: true
+
+eval_path_dict: {
+   "C+S": "experiments/cross-contamination/crystal_full_models/attn_bias_pos_reset_addcomp_5kcrystaltest.eval",
+   "XRD": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_NOPROMPT_5kcrytaltest.eval",
+   "XRD+C": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_COMP_5kcrytaltest.eval",
+   "XRD+C+S": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_COMP_SG_5kcrytaltest.eval",
+   "...+0.1%": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_COMP_SG_1PPTNOISE_5kcrytaltest.eval",
+   "...+1.0%": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_COMP_SG_1PCTNOISE_5kcrytaltest.eval",
+   "...+5.0%": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_COMP_SG_5PCTNOISE_5kcrytaltest.eval",
+   "...+10.0%": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_COMP_SG_10PCTNOISE_5kcrytaltest.eval",
+} 
