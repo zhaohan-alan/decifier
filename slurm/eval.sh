@@ -26,4 +26,4 @@ ARGS=("$@")
 # Display the arguments
 echo "Arguments passed: ${ARGS[*]}"
 
-python scripts/evaluate.py "${ARGS[@]}"
+python bin/evaluate.py "${ARGS[@]}"

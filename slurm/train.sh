@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH -p gpu --gres=gpu:a100:1
-#SBATCH --time 1-00:00:00
+#SBATCH --time 1-12:00:00
 #SBATCH --job-name=train_decifer
 #SBATCH --array 0
 #SBATCH --cpus-per-task=3
-#SBATCH --mem-per-cpu=6G
+#SBATCH --mem-per-cpu=16G
 #SBATCH --output=logs/train_%A_%a.out
 
 # Function to display help message
@@ -25,4 +25,4 @@ ARGS=("$@")
 # Display the arguments
 echo "Arguments passed: ${ARGS[*]}"
 
-python scripts/train.py "${ARGS[@]}"
+python bin/train.py "${ARGS[@]}"

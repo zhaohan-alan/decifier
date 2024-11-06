@@ -24,4 +24,4 @@ ARGS=("$@")
 # Display the arguments
 echo "Arguments passed: ${ARGS[*]}"
 
-python scripts/prepare_dataset.py "${ARGS[@]}"
+python bin/prepare_dataset.py "${ARGS[@]}"
