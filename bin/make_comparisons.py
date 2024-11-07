@@ -59,8 +59,8 @@ def process_eval(
             xrd_clean_from_sample = row['descriptors.xrd_clean_from_sample.iq']
             xrd_clean_from_gen    = row['descriptors.xrd_clean_from_gen.iq']
             xrd_q                 = row['descriptors.xrd_clean_from_gen.q']
-            soap_from_sample      = row['descriptors.soap_from_sample']
-            soap_from_gen         = row['descriptors.soap_from_gen']
+            soap_from_sample      = row['descriptors.soap_sample']
+            soap_from_gen         = row['descriptors.soap_gen']
         else:
             xrd_dirty_from_sample = row['descriptors.xrd_sample.iq']
             xrd_clean_from_sample = row['descriptors.xrd_sample.iq']
@@ -131,6 +131,7 @@ def process_eval(
     return df_results
 
 #def # TODO Make function for comparing soap descriptor distributions, PCA/T-SNE, internal comparisons of similarity and external to generated set etc.
+# Also use FID to compare and access the distance between the distributions of features in real and generated structure sets.
 
 def plot_violin_box(
     data,
@@ -140,6 +141,7 @@ def plot_violin_box(
     ax,
     cut = 0,
     medians=None,
+    ylim = None,
 ):
     sns.violinplot(data = data, cut = cut, ax=ax)
     sns.boxplot(data = data, whis = 1.5, fliersize = 2, linewidth = 1.5, boxprops = dict(alpha=0.2), ax=ax)
@@ -155,6 +157,8 @@ def plot_violin_box(
     ax.set_xticklabels(labels, rotation=30, ha='right')
     ax.axvline(x=0.5, lw=1, ls='--', c='k')
     ax.axvline(x=3.5, lw=1, ls='--', c='k')
+    if ylim:
+        ax.set_ylim(ylim)
 
 def plot_histogram(
     data, 
@@ -258,7 +262,7 @@ def fingerprint_comparison(
     fig, ax = plt.subplots(figsize=(10, 5))
 
     plot_violin_box(data_soap_distance, labels, ylabel="Structural similarity", title="SOAP Distance distribution", ax=ax,
-                    medians = {label: df_data[label]['soap_distance'].values for label in labels})
+                    medians = {label: df_data[label]['soap_distance'].values for label in labels}, ylim=(0,1))
 
     save_figure(fig, os.path.join(output_folder, "fingerprint_soap_distance.png"))
 
