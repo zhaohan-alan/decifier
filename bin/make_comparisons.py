@@ -25,6 +25,12 @@ def r2(sample, gen):
     """
     return 1 - np.sum((sample - gen)**2) / np.sum((sample - np.mean(sample))**2)
 
+def soap_distance(sample, gen):
+    """
+    Calculates the normalized soap distance between sampe and gen soap descriptors
+    """
+    return np.dot(sample, gen) / np.sqrt(np.dot(sample, sample) * np.dot(gen, gen))
+
 def process_eval(
         eval_path: str,
         debug_max: Optional[int] = None,
@@ -53,11 +59,15 @@ def process_eval(
             xrd_clean_from_sample = row['descriptors.xrd_clean_from_sample.iq']
             xrd_clean_from_gen    = row['descriptors.xrd_clean_from_gen.iq']
             xrd_q                 = row['descriptors.xrd_clean_from_gen.q']
+            soap_from_sample      = row['descriptors.soap_from_sample']
+            soap_from_gen         = row['descriptors.soap_from_gen']
         else:
             xrd_dirty_from_sample = row['descriptors.xrd_sample.iq']
             xrd_clean_from_sample = row['descriptors.xrd_sample.iq']
             xrd_clean_from_gen    = row['descriptors.xrd_gen.iq']
             xrd_q                 = row['descriptors.xrd_gen.q']
+            soap_from_sample      = row['descriptors.xrd_sample.iq']
+            soap_from_gen         = row['descriptors.xrd_gen.iq']
 
         # Extract Validity
         formula_validity = row['validity.formula']
@@ -92,12 +102,16 @@ def process_eval(
             spacegroup_num = space_group_symbol_to_number(spacegroup_sym)
             spacegroup_num = int(spacegroup_num) if spacegroup_num is not None else 0
 
+            # Calculate soap kernel
+            distance = soap_distance(soap_from_sample, soap_from_gen)
+
             # Append to data list
             data_list.append({
                 'rwp_dirty': rwp_dirty_value,
                 'rwp_clean': rwp_clean_value,
                 'r2_dirty': r2_dirty_value,
                 'r2_clean': r2_clean_value,
+                'soap_distance': distance,
                 'xrd_q': xrd_q,
                 'xrd_dirty_from_sample': xrd_dirty_from_sample,
                 'xrd_clean_from_sample': xrd_clean_from_sample,
@@ -116,10 +130,61 @@ def process_eval(
     df_results = pd.DataFrame(data_list)
     return df_results
 
+#def # TODO Make function for comparing soap descriptor distributions, PCA/T-SNE, internal comparisons of similarity and external to generated set etc.
+
+def plot_violin_box(
+    data,
+    labels,
+    ylabel,
+    title,
+    ax,
+    cut = 0,
+    medians=None,
+):
+    sns.violinplot(data = data, cut = cut, ax=ax)
+    sns.boxplot(data = data, whis = 1.5, fliersize = 2, linewidth = 1.5, boxprops = dict(alpha=0.2), ax=ax)
+    if medians:
+        for i, label in enumerate(labels):
+            med_value = np.median(medians[label])
+            text = ax.text(i, med_value + 0.01, f'{med_value:.2f}', ha='center', va='bottom', fontsize=10, color='black')
+            text.set_path_effects([path_effects.Stroke(linewidth=3, foreground='white'), path_effects.Normal()])
+
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.set_xticks(np.arange(len(labels)))
+    ax.set_xticklabels(labels, rotation=30, ha='right')
+    ax.axvline(x=0.5, lw=1, ls='--', c='k')
+    ax.axvline(x=3.5, lw=1, ls='--', c='k')
+
+def plot_histogram(
+    data, 
+    labels, 
+    xlabel,
+    ylabel,
+    title, 
+    ax,
+):
+    for label in labels:
+        values = data[label]
+        ax.hist(values, bins=50, alpha=0.7, density=True, label=label)
+    
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.2)
+
+def save_figure(
+    fig, 
+    output_path,
+):
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+
 def fingerprint_comparison(
     eval_path_dict: Dict[str, str],
     output_folder: str,
-    debug_max: bool = None,
+    debug_max: Optional[int] = None,
     disable_outer_pbar: bool = True,
     use_deprecated_keys: bool = False,
 ) -> None:
@@ -142,84 +207,62 @@ def fingerprint_comparison(
         labels.append(label)
         pbar.update(1)
     pbar.close()
+
     data_rwp_dirty = [df_data[label]['rwp_dirty'].values for label in labels]
     data_rwp_clean = [df_data[label]['rwp_clean'].values for label in labels]
     data_r2_dirty = [df_data[label]['r2_dirty'].values for label in labels]
     data_r2_clean = [df_data[label]['r2_clean'].values for label in labels]
+    data_soap_distance = [df_data[label]['soap_distance'].values for label in labels]
 
-    # Make figure
+    # Dirty
     fig, (ax1, ax2) = plt.subplots(2,1,figsize=(10, 10), sharex=True)
 
-    ax1.set_title(r"Fingerprint comparison")
+    plot_violin_box(data_rwp_dirty, labels, ylabel=r"$R_{wp}$", title="Fingerprint comparisons (dirty)", ax=ax1,
+                    medians = {label: df_data[label]['rwp_dirty'].values for label in labels})
+    plot_violin_box(data_r2_dirty, labels, ylabel=r"$R^{2}$", title="", ax=ax2,
+                    medians = {label: df_data[label]['r2_dirty'].values for label in labels})
 
-    # Plot combined violin and boxplot for Rwp (Top-left)
-    sns.violinplot(data=data_rwp_clean, cut=0, ax=ax1)
-    sns.boxplot(data=data_rwp_clean, whis=1.5, fliersize=2, linewidth=1.5, boxprops=dict(alpha=0.2), ax=ax1)
+    save_figure(fig, os.path.join(output_folder, "fingerprint_dirty_comparison_violin.png"))
+    
+    # Clean
+    fig, (ax1, ax2) = plt.subplots(2,1,figsize=(10, 10), sharex=True)
 
-    # Add medians to the Rwp plot
-    for i, label in enumerate(labels):
-        med_value = np.median(df_data[label]['rwp_clean'].values)
-        text = ax1.text(i, med_value + 0.01, f'{med_value:.2f}', ha='center', va='bottom', fontsize=10, color='black')
-        text.set_path_effects([path_effects.Stroke(linewidth=3, foreground='white'), path_effects.Normal()])
+    plot_violin_box(data_rwp_clean, labels, ylabel=r"$R_{wp}$", title="Fingerprint comparisons (clean)", ax=ax1,
+                    medians = {label: df_data[label]['rwp_clean'].values for label in labels})
+    plot_violin_box(data_r2_clean, labels, ylabel=r"$R^{2}$", title="", ax=ax2,
+                    medians = {label: df_data[label]['r2_clean'].values for label in labels})
 
-    ax1.set_ylabel(r"$R_{wp}$")
-    ax1.set_xticks(np.arange(len(labels)))
-    ax1.set_xticklabels(labels, rotation=30, ha='right')
-    ax1.set_ylim(0,)
+    save_figure(fig, os.path.join(output_folder, "fingerprint_clean_comparison_violin.png"))
 
-    ax1.axvline(x=0.5, lw=1, ls='--', c='k')
-    ax1.axvline(x=3.5, lw=1, ls='--', c='k')
-
-    # Plot combined violin and boxplot for R^2 (Top-right)
-    sns.violinplot(data=data_r2_clean, cut=0, ax=ax2)
-    sns.boxplot(data=data_r2_clean, whis=1.5, fliersize=2, linewidth=1.5, boxprops=dict(alpha=0.2), ax=ax2)
-
-    # Add medians to the R^2 plot
-    for i, label in enumerate(labels):
-        med_value = np.median(df_data[label]['r2_clean'].values)
-        text = ax2.text(i, med_value + 0.01, f'{med_value:.2f}', ha='center', va='bottom', fontsize=10, color='black')
-        text.set_path_effects([path_effects.Stroke(linewidth=3, foreground='white'), path_effects.Normal()])
-        
-    ax2.set_ylabel(r"$R^2$")
-    ax2.set_xticks(np.arange(len(labels)))
-    ax2.set_xticklabels(labels, rotation=30, ha='right')
-
-    ax2.axvline(x=0.5, lw=1, ls='--', c='k')
-    ax2.axvline(x=3.5, lw=1, ls='--', c='k')
-
-    fig.tight_layout()
-    fig.savefig(os.path.join(output_folder, "fingerprint_comparison_violin.png"), dpi=200)
-    plt.show()
-    plt.close()
-
+    # Clean
     fig, (ax1, ax2) = plt.subplots(2,1,figsize=(10, 6))
 
-    # Plot normalized histograms for Rwp (Bottom-left)
-    for label in labels:
-        rwp_values = df_data[label]['rwp_clean'].values
-        ax1.hist(rwp_values, bins=50, alpha=0.7, density=True, label=label)
+    plot_histogram({label: df_data[label]['rwp_dirty'].values for label in labels}, labels, xlabel=r"$R_{wp}$",
+                   ylabel="Density", title="Histogram of Rwp Values (dirty)", ax=ax1)
+    plot_histogram({label: df_data[label]['r2_dirty'].values for label in labels}, labels, xlabel=r"$R^2$",
+                   ylabel="Density", title="Histogram of $R^2$ Values", ax=ax2)
 
-    ax1.set_title("Histogram of Rwp Values")
-    ax1.set_xlabel("$R_{wp}$")
-    ax1.set_ylabel("Density")
-    ax1.legend(fontsize=8)
-    ax1.grid(alpha=0.2)
+    save_figure(fig, os.path.join(output_folder, "fingerprint_dirty_comparison_1d_histogram.png"))
 
-    # Plot normalized histograms for R^2 (Bottom-right)
-    for label in labels:
-        r2_values = df_data[label]['r2_clean'].values
-        ax2.hist(r2_values, bins=50, alpha=0.7, density=True, label=label)
+    # Clean
+    fig, (ax1, ax2) = plt.subplots(2,1,figsize=(10, 6))
 
-    ax2.set_title("Histogram of $R^2$ Values")
-    ax2.set_ylabel("Density")
-    ax2.set_xlabel(r"$R^2$")
-    ax2.legend(fontsize=8)
-    ax2.grid(alpha=0.2)
+    plot_histogram({label: df_data[label]['rwp_clean'].values for label in labels}, labels, xlabel=r"$R_{wp}$",
+                   ylabel="Density", title="Histogram of Rwp Values (clean)", ax=ax1)
+    plot_histogram({label: df_data[label]['r2_clean'].values for label in labels}, labels, xlabel=r"$R^2$",
+                   ylabel="Density", title="Histogram of $R^2$ Values", ax=ax2)
 
-    fig.tight_layout()
-    fig.savefig(os.path.join(output_folder, "fingerprint_comparison_1d_histogram.png"), dpi=200)
+    save_figure(fig, os.path.join(output_folder, "fingerprint_clean_comparison_1d_histogram.png"))
+    
+    # SOAP distance plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    plot_violin_box(data_soap_distance, labels, ylabel="Structural similarity", title="SOAP Distance distribution", ax=ax,
+                    medians = {label: df_data[label]['soap_distance'].values for label in labels})
+
+    save_figure(fig, os.path.join(output_folder, "fingerprint_soap_distance.png"))
+
     plt.show()
-    plt.close()
 
 if __name__ == "__main__":
 

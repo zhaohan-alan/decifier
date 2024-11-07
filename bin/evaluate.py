@@ -308,7 +308,23 @@ def calculate_crystal_descriptors(structure_name, cif_string, species_list, desc
             print(f"Error processing {structure_name}: {e}")
         return None
 
-def worker(input_queue, eval_files_dir, done_queue):
+def get_soap(
+    cif_name: str,
+    cif_string: str,
+    soap_generator: SOAP,
+    debug: bool = False
+):
+    # Make structure
+    try:
+        structure = parser_from_string(cif_string).get_structures()[0].to_ase_atoms()
+        soap_descriptor = soap_generator.create(structure)
+        return soap_descriptor
+    except Exception as e:
+        if debug:
+            print(f"Error processing {cif_name}: {e} for generation of SOAP")
+        return None
+
+def worker(input_queue, eval_files_dir, soap_params, done_queue):
     """
     Worker process that retrieves tasks from the input queue, processes CIF files, calculates descriptors, 
     and saves evaluation results to the specified directory.
@@ -321,6 +337,7 @@ def worker(input_queue, eval_files_dir, done_queue):
     Args:
         input_queue (multiprocessing.Queue): Queue that provides tasks containing CIF data and metadata.
         eval_files_dir (str): Directory where evaluation results will be saved as pickle files.
+        soap_params (dict): Dictionary of SOAP parameters for calculating SOAP
     
     Task Format (dict):
         Each task in the queue is expected to have the following structure:
@@ -332,7 +349,6 @@ def worker(input_queue, eval_files_dir, done_queue):
             - 'xrd_cont_from_sample': XRD data from the sample for comparison.
             - 'xrd_disc_from_sample': XRD data from the sample for comparison.
             - 'species': Atomic species involved in the structure.
-            - 'desc_parameters': Parameters for descriptor (SOAP, ACSF) calculations.
             - 'dataset': Name of the dataset (optional, defaults to 'UnknownDataset').
             - 'model': Name of the model (optional, defaults to 'UnknownModel').
             - 'debug': Boolean flag for enabling debug mode.
@@ -344,6 +360,20 @@ def worker(input_queue, eval_files_dir, done_queue):
     
     # Initialize the tokenizer decoder function
     decode = Tokenizer().decode
+
+    # Initialise soap descriptor for each worker
+    soap = SOAP(
+        species = soap_params['species_list'],
+        r_cut = soap_params['r_cut'],
+        n_max = soap_params['n_max'],
+        l_max = soap_params['l_max'],
+        sigma = soap_params['sigma'],
+        rbf = soap_params['rbf'],
+        compression = {'mode': soap_params['compression_mode']},
+        periodic = soap_params['periodic'],
+        sparse = soap_params['sparse'],
+        average = soap_params['average'],
+    )
 
     while True:
         # Fetch task from the input queue
@@ -405,9 +435,19 @@ def worker(input_queue, eval_files_dir, done_queue):
                             mask_prob = None,
                             debug = task['debug'],
                         ),
-                        'soap_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['SOAP'],
-                        'acsf_gen': calculate_crystal_descriptors(task['name'], cif_string, task['species'], task['desc_parameters'], task['debug'])['ACSF'],
                         'xrd_dirty_from_sample': task['xrd_dirty_cont_from_sample'],
+                        'soap_gen': get_soap(
+                                   cif_name = task['name'],
+                                   cif_string = cif_string,
+                                   soap_generator = soap,
+                                   debug = task['debug']
+                        ),
+                        'soap_sample': get_soap(
+                                   cif_name = task['name'],
+                                   cif_string = task['cif_sample'],
+                                   soap_generator = soap,
+                                   debug = task['debug']
+                        ),
                     },
                     'dataset_name': task.get('dataset', 'UnknownDataset'),
                     'model_name': task.get('model', 'UnknownModel'),
@@ -426,7 +466,6 @@ def worker(input_queue, eval_files_dir, done_queue):
 
         except Exception as e:
             # In case of error, save error information
-            raise e
             save_evaluation({'status': 'error', 'error_msg': str(e), 'index': task['index'], 'rep': task['rep']}, task['name'], task['rep'], eval_files_dir)
         finally:
             # Signal task completion
@@ -498,7 +537,6 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
             - 'add_spacegroup' (bool): Whether to include spacegroup information in the prompt.
             - 'max_new_tokens' (int): Maximum number of new tokens to generate.
             - 'xrd_parameters' (dict): Parameters for the XRD calculation.
-            - 'desc_parameters' (dict): Parameters for the descriptor (SOAP, ACSF) calculations.
             - 'species' (list): List of species in the dataset.
             - 'dataset_name' (str): Name of the dataset for saving purposes.
             - 'model_name' (str): Name of the model for saving purposes.
@@ -594,7 +632,6 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
                 'xrd_parameters': kwargs['xrd_parameters'],
                 'xrd_disc_from_sample': {'q': xrd_disc_q, 'iq': xrd_disc_iq},
                 'xrd_dirty_cont_from_sample': {'q': xrd_sample_q, 'iq': xrd_sample_iq},
-                'desc_parameters': kwargs['desc_parameters'],
                 'species': kwargs['species'],
                 'dataset': kwargs['dataset_name'],
                 'model': kwargs['model_name'],
@@ -724,6 +761,7 @@ def main():
     parser.add_argument('--soap-compression_mode', type=str, default=None, help='SOAP: Compression mode (e.g., crossover).')
     parser.add_argument('--soap-periodic', type=bool, default=None, help='SOAP: Periodicity of the system.')
     parser.add_argument('--soap-sparse', type=bool, default=None, help='SOAP: Whether the result should be sparse.')
+    parser.add_argument('--soap-average', type=str, default=None, help='SOAP: Which function to use for structure averaging ("inner" or "outer").')
 
     parser.add_argument('--acsf-r_cut', type=float, default=None, help='ACSF: Cutoff radius.')
     parser.add_argument('--acsf-periodic', type=bool, default=None, help='ACSF: Periodicity of the system.')
@@ -753,17 +791,18 @@ def main():
     # Set default descriptor values if they are not present in the metadata
     default_descriptor_params = {
         'soap': {
-            'r_cut': 6.0,
-            'n_max': 8,
-            'l_max': 6,
-            'sigma': 1.0,
+            'r_cut': 3.25,
+            'n_max': 12,
+            'l_max': 12,
+            'sigma': 0.5,
             'rbf': 'gto',
-            'compression_mode': 'crossover',
+            'compression_mode': 'off',
             'periodic': True,
             'sparse': False,
+            'average': 'inner',
         },
         'acsf': {
-            'r_cut': 6.0,
+            'r_cut': 3.25,
             'periodic': True,
         }
     }
@@ -815,6 +854,12 @@ def main():
         'mask_prob': None,
     }
 
+    # Soap params
+    soap_params = {}
+    for key, value in metadata['descriptors']['soap'].items():
+        soap_params[key] = value
+    soap_params['species_list'] = metadata['species']
+
     # Directory for evaluation
     if args.out_folder is not None:
         out_folder = args.out_folder
@@ -839,7 +884,7 @@ def main():
     else:
         # Start worker processes for processing
         processes = [
-            mp.Process(target=worker, args=(input_queue, eval_files_dir, done_queue))
+            mp.Process(target=worker, args=(input_queue, eval_files_dir, soap_params, done_queue))
             for _ in range(args.num_workers)
         ]
         
@@ -863,7 +908,6 @@ def main():
             model_name=args.model_name,
             num_reps=args.num_reps,
             xrd_parameters=metadata['xrd'],
-            desc_parameters=metadata['descriptors'],
             species=metadata['species'],
             override=args.override,
             zero_cond=args.zero_cond,
