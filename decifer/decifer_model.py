@@ -50,6 +50,7 @@ class DeciferConfig:
     boundary_masking: bool = True
     cl_model_ckpt: Optional[str] = None
     cond_hidden_size: int = 512
+    freeze_condition_embedding: bool = False
 
 class LayerNorm(nn.Module):
 
