@@ -665,12 +665,12 @@ def collect_results(eval_files_dir):
     Returns:
         list: A list of evaluation results (dictionaries) loaded from the pickle files.
     """
-    eval_files = glob(os.path.join(eval_files_dir, '*.pkl'))
+    eval_files = glob(os.path.join(eval_files_dir, '*.pkl.gz'))
     evaluations = []
     
     # Load each pickle file and append the evaluation result to the evaluations list
     for eval_file in eval_files:
-        with open(eval_file, 'rb') as infile:
+        with gzip.open(eval_file, 'rb') as infile:
             eval_result = pickle.load(infile)
             evaluations.append(eval_result)
     
