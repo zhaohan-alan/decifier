@@ -11,6 +11,7 @@ from queue import Empty
 from glob import glob
 import pickle
 import json
+import gzip
 
 # Third-party library imports
 import torch
@@ -493,12 +494,12 @@ def save_evaluation(eval_result, structure_name, repetition_num, eval_files_dir)
     """
     
     # Construct the final output filename and a temporary filename
-    output_filename = os.path.join(eval_files_dir, f"{structure_name}_{repetition_num}.pkl")
+    output_filename = os.path.join(eval_files_dir, f"{structure_name}_{repetition_num}.pkl.gz")
     temp_filename = output_filename + '.tmp'
 
     try:
         # Write evaluation result to a temporary file
-        with open(temp_filename, 'wb') as temp_file:
+        with gzip.open(temp_filename, 'wb') as temp_file:
             pickle.dump(eval_result, temp_file)
         
         # Rename the temporary file to the final output file to ensure atomic save
