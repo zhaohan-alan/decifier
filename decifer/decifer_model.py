@@ -239,10 +239,8 @@ class Decifer(nn.Module):
             cl_encoder = CLEncoder(**cl_checkpoint['model_args'])
             cl_encoder.load_state_dict(cl_checkpoint['model'])
 
-            # Define cond_embedding and freeze weights
+            # Define cond_embedding.
             cond_embedding = cl_encoder.enc
-            for param in cond_embedding.parameters():
-                param.requires_grad = False
 
         elif config.condition_with_mlp_emb:
 
@@ -254,6 +252,13 @@ class Decifer(nn.Module):
             )
         else:
             cond_embedding = nn.Identity() # nn's version of None
+        
+        try: # TEMPORARY
+            if config.freeze_condition_embedding:
+                for param in cond_embedding.parameters():
+                        param.requires_grad = False
+        except:
+            pass
 
         self.transformer = nn.ModuleDict(dict(
             cond_embedding=cond_embedding,

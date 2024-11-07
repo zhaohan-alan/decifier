@@ -70,6 +70,7 @@ class TrainConfig:
     cl_model_ckpt: Optional[str] = None
     boundary_masking: bool = True
     cond_hidden_size: int = 512
+    freeze_condition_embedding: bool = False
 
     # Augmentation at training time
     fwhm_range_min: float = 0.01 
@@ -243,6 +244,7 @@ if __name__ == "__main__":
         boundary_masking=C.boundary_masking,
         cl_model_ckpt = cl_model_ckpt,
         cond_hidden_size = C.cond_hidden_size,
+        freeze_condition_embedding = C.freeze_condition_embedding,
     )
 
     if C.init_from == "scratch":
