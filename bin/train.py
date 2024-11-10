@@ -184,7 +184,10 @@ if __name__ == "__main__":
     }
 
     # Load CLEncoder model path if it exists
-    cl_model_ckpt = metadata['cl_embeddings']['model_path'] if "cl_embeddings" in metadata else C.cl_model_ckpt
+    if C.cl_model_ckpt is not None:
+        cl_model_ckpt = C.cl_model_ckpt
+    else:
+        cl_model_ckpt = metadata['cl_embeddings']['model_path']
 
     # Cond size from augmentation kwargs
     C.cond_size = len(np.arange(augmentation_kwargs['qmin'], augmentation_kwargs['qmax'], augmentation_kwargs['qstep']))
