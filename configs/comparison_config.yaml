@@ -1,6 +1,8 @@
 output_folder: "experiment_test"
 debug_max: null
 use_deprecated_keys: false
+fingerprint_comparison: true
+structural_diversity: true
 
 eval_path_dict: {
    # "C+S": "experiments/cross-contamination/crystal_full_models/attn_bias_pos_reset_addcomp_5kcrystaltest.eval",
@@ -11,5 +13,6 @@ eval_path_dict: {
    # "...+1.0%": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_COMP_SG_1PCTNOISE_5kcrytaltest.eval",
    # "...+5.0%": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_COMP_SG_5PCTNOISE_5kcrytaltest.eval",
    # "...+10.0%": "experiments/cl_vs_mlp/cond_mlp_noaug_v1/COND_COMP_SG_10PCTNOISE_5kcrytaltest.eval",
-   "nocond_small": "noprompt_0pctnoise_1pctfwhm.eval"
+   # "nocond_small": "noprompt_0pctnoise_1pctfwhm.eval"
+   "testing": "testing_small_large_soap/test_dataset_name_only_small.eval"
 } 

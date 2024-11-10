@@ -363,11 +363,24 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
     decode = Tokenizer().decode
 
     # Initialise soap descriptor for each worker
-    soap = SOAP(
+    soap_large = SOAP(
         species = soap_params['species_list'],
         r_cut = soap_params['r_cut'],
-        n_max = soap_params['n_max'],
-        l_max = soap_params['l_max'],
+        n_max = soap_params['n_max_large'],
+        l_max = soap_params['l_max_large'],
+        sigma = soap_params['sigma'],
+        rbf = soap_params['rbf'],
+        compression = {'mode': soap_params['compression_mode']},
+        periodic = soap_params['periodic'],
+        sparse = soap_params['sparse'],
+        average = soap_params['average'],
+    )
+    
+    soap_small = SOAP(
+        species = soap_params['species_list'],
+        r_cut = soap_params['r_cut'],
+        n_max = soap_params['n_max_small'],
+        l_max = soap_params['l_max_small'],
         sigma = soap_params['sigma'],
         rbf = soap_params['rbf'],
         compression = {'mode': soap_params['compression_mode']},
@@ -437,16 +450,16 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
                             debug = task['debug'],
                         ),
                         'xrd_dirty_from_sample': task['xrd_dirty_cont_from_sample'],
-                        'soap_gen': get_soap(
+                        'soap_small_gen': get_soap(
                                    cif_name = task['name'],
                                    cif_string = cif_string,
-                                   soap_generator = soap,
+                                   soap_generator = soap_small,
                                    debug = task['debug']
                         ),
-                        'soap_sample': get_soap(
+                        'soap_small_sample': get_soap(
                                    cif_name = task['name'],
                                    cif_string = task['cif_sample'],
-                                   soap_generator = soap,
+                                   soap_generator = soap_small,
                                    debug = task['debug']
                         ),
                     },
@@ -457,6 +470,23 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
                     'spacegroup_sample': task.get('spacegroup_sample', None),
                     'status': 'success',
                 })
+                
+                if not task['exclude_large_soap']:
+                    eval_result.update({
+                        'descriptors': {
+                            'soap_large_gen': get_soap(
+                                       cif_name = task['name'],
+                                       cif_string = cif_string,
+                                       soap_generator = soap_large,
+                                       debug = task['debug']
+                            ),
+                            'soap_large_sample': get_soap(
+                                       cif_name = task['name'],
+                                       cif_string = task['cif_sample'],
+                                       soap_generator = soap_large,
+                                       debug = task['debug']
+                            )}
+                    })
 
                 # Save the evaluation result to a file
                 save_evaluation(eval_result, task['name'], task['rep'], eval_files_dir)
@@ -638,6 +668,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
                 'model': kwargs['model_name'],
                 'cif_sample': cif_sample,
                 'spacegroup_sample': spacegroup_sample,
+                'exclude_large_soap': kwargs['exclude_large_soap'],
                 'debug': kwargs['debug'],
             }
             
@@ -755,14 +786,18 @@ def main():
 
     # Argument parsing for required and optional arguments
     parser.add_argument('--soap-r_cut', type=float, default=None, help='SOAP: Cutoff radius.')
-    parser.add_argument('--soap-n_max', type=int, default=None, help='SOAP: Maximum number of radial basis functions.')
-    parser.add_argument('--soap-l_max', type=int, default=None, help='SOAP: Maximum number of spherical harmonics.')
+    parser.add_argument('--soap-n_max_small', type=int, default=None, help='SOAP_small: Maximum number of radial basis functions.')
+    parser.add_argument('--soap-l_max_small', type=int, default=None, help='SOAP_small: Maximum number of spherical harmonics.')
+    parser.add_argument('--soap-n_max_large', type=int, default=None, help='SOAP_large: Maximum number of radial basis functions.')
+    parser.add_argument('--soap-l_max_large', type=int, default=None, help='SOAP_large: Maximum number of spherical harmonics.')
     parser.add_argument('--soap-sigma', type=float, default=None, help='SOAP: Width of Gaussian broadening.')
     parser.add_argument('--soap-rbf', type=str, default=None, help='SOAP: Radial basis function type.')
     parser.add_argument('--soap-compression_mode', type=str, default=None, help='SOAP: Compression mode (e.g., crossover).')
     parser.add_argument('--soap-periodic', type=bool, default=None, help='SOAP: Periodicity of the system.')
     parser.add_argument('--soap-sparse', type=bool, default=None, help='SOAP: Whether the result should be sparse.')
     parser.add_argument('--soap-average', type=str, default=None, help='SOAP: Which function to use for structure averaging ("inner" or "outer").')
+
+    parser.add_argument('--exclude-large-soap', action='store_true')
 
     parser.add_argument('--acsf-r_cut', type=float, default=None, help='ACSF: Cutoff radius.')
     parser.add_argument('--acsf-periodic', type=bool, default=None, help='ACSF: Periodicity of the system.')
@@ -792,9 +827,11 @@ def main():
     # Set default descriptor values if they are not present in the metadata
     default_descriptor_params = {
         'soap': {
-            'r_cut': 3.25,
-            'n_max': 12,
-            'l_max': 12,
+            'r_cut': 6.0,
+            'n_max_large': 12,
+            'l_max_large': 12,
+            'n_max_small': 3,
+            'l_max_small': 3,
             'sigma': 0.5,
             'rbf': 'gto',
             'compression_mode': 'off',
@@ -803,7 +840,7 @@ def main():
             'average': 'inner',
         },
         'acsf': {
-            'r_cut': 3.25,
+            'r_cut': 6.0,
             'periodic': True,
         }
     }
@@ -816,10 +853,14 @@ def main():
     # Update descriptor parameters based on command-line arguments (if provided)
     if args.soap_r_cut is not None:
         metadata['descriptors']['soap']['r_cut'] = args.soap_r_cut
-    if args.soap_n_max is not None:
-        metadata['descriptors']['soap']['n_max'] = args.soap_n_max
-    if args.soap_l_max is not None:
-        metadata['descriptors']['soap']['l_max'] = args.soap_l_max
+    if args.soap_n_max_large is not None:
+        metadata['descriptors']['soap']['n_max_large'] = args.soap_n_max_large
+    if args.soap_l_max_large is not None:
+        metadata['descriptors']['soap']['l_max_large'] = args.soap_l_max_large
+    if args.soap_n_max_small is not None:
+        metadata['descriptors']['soap']['n_max_small'] = args.soap_n_max_small
+    if args.soap_l_max_small is not None:
+        metadata['descriptors']['soap']['l_max_small'] = args.soap_l_max_small
     if args.soap_sigma is not None:
         metadata['descriptors']['soap']['sigma'] = args.soap_sigma
     if args.soap_rbf is not None:
@@ -915,6 +956,7 @@ def main():
             temperature=args.temperature,
             top_k=args.top_k,
             augment_param_dict=augment_param_dict,
+            exclude_large_soap=args.exclude_large_soap,
         )
 
         if num_send > 0:
