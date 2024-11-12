@@ -428,7 +428,7 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
                             qmin = task['xrd_parameters']['qmin'],
                             qmax = task['xrd_parameters']['qmax'],
                             qstep = task['xrd_parameters']['qstep'],
-                            fwhm_range = (0.01, 0.01),
+                            fwhm_range = (task['clean_fwhm'], task['clean_fwhm']),
                             eta_range = (0.5, 0.5),
                             noise_range = None,
                             intensity_scale_range = None,
@@ -442,7 +442,7 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
                             qmin = task['xrd_parameters']['qmin'],
                             qmax = task['xrd_parameters']['qmax'],
                             qstep = task['xrd_parameters']['qstep'],
-                            fwhm_range = (0.01, 0.01),
+                            fwhm_range = (task['clean_fwhm'], task['clean_fwhm']),
                             eta_range = (0.5, 0.5),
                             noise_range = None,
                             intensity_scale_range = None,
@@ -472,23 +472,21 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
                 })
                 
                 if not task['exclude_large_soap']:
-                    eval_result.update({
-                        'descriptors': {
-                            'soap_large_gen': get_soap(
-                                       cif_name = task['name'],
-                                       cif_string = cif_string,
-                                       soap_generator = soap_large,
-                                       debug = task['debug']
-                            ),
-                            'soap_large_sample': get_soap(
-                                       cif_name = task['name'],
-                                       cif_string = task['cif_sample'],
-                                       soap_generator = soap_large,
-                                       debug = task['debug']
-                            )}
+                    eval_result['descriptors'].update({
+                        'soap_large_gen': get_soap(
+                            cif_name = task['name'],
+                            cif_string = cif_string,
+                            soap_generator = soap_large,
+                            debug = task['debug']
+                        ),
+                        'soap_large_sample': get_soap(
+                            cif_name = task['name'],
+                            cif_string = task['cif_sample'],
+                            soap_generator = soap_large,
+                            debug = task['debug']
+                        ),
                     })
 
-                # Save the evaluation result to a file
                 save_evaluation(eval_result, task['name'], task['rep'], eval_files_dir)
 
             else:
@@ -670,6 +668,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
                 'spacegroup_sample': spacegroup_sample,
                 'exclude_large_soap': kwargs['exclude_large_soap'],
                 'debug': kwargs['debug'],
+                'clean_fwhm': kwargs['clean_fwhm'],
             }
             
             # Put the task into the input queue for worker processes to consume
@@ -698,13 +697,13 @@ def collect_results(eval_files_dir):
     """
     eval_files = glob(os.path.join(eval_files_dir, '*.pkl.gz'))
     evaluations = []
-    
+
     # Load each pickle file and append the evaluation result to the evaluations list
     for eval_file in eval_files:
         with gzip.open(eval_file, 'rb') as infile:
             eval_result = pickle.load(infile)
             evaluations.append(eval_result)
-    
+
     return evaluations
 
 def save_evaluations_to_parquet(evaluations, out_folder, dataset_name, duration):
@@ -783,6 +782,7 @@ def main():
     parser.add_argument('--add-noise', type=float, default=None, help='')
     parser.add_argument('--add-broadening', type=float, default=None, help='')
     parser.add_argument('--default_fwhm', type=float, default=0.01, help='')
+    parser.add_argument('--clean_fwhm', type=float, default=0.01, help='')
 
     # Argument parsing for required and optional arguments
     parser.add_argument('--soap-r_cut', type=float, default=None, help='SOAP: Cutoff radius.')
@@ -827,7 +827,7 @@ def main():
     # Set default descriptor values if they are not present in the metadata
     default_descriptor_params = {
         'soap': {
-            'r_cut': 6.0,
+            'r_cut': 3.25,
             'n_max_large': 12,
             'l_max_large': 12,
             'n_max_small': 3,
@@ -840,7 +840,7 @@ def main():
             'average': 'inner',
         },
         'acsf': {
-            'r_cut': 6.0,
+            'r_cut': 3.25,
             'periodic': True,
         }
     }
@@ -918,72 +918,62 @@ def main():
     eval_files_dir = os.path.join(out_folder or os.path.dirname(h5_test_path), "eval_files", args.dataset_name)
     os.makedirs(eval_files_dir, exist_ok=True)
 
-    # Collect and combine evaluation files if the --collect-only flag is used
-    start = time()
-    if args.collect_only:
-        evaluations = collect_results(eval_files_dir)
-        save_evaluations_to_parquet(evaluations, out_folder, args.dataset_name, time() - start)
-    else:
-        # Start worker processes for processing
-        processes = [
-            mp.Process(target=worker, args=(input_queue, eval_files_dir, soap_params, done_queue))
-            for _ in range(args.num_workers)
-        ]
-        
-        for process in processes:
-            process.start()
+    # Start worker processes for processing
+    processes = [
+        mp.Process(target=worker, args=(input_queue, eval_files_dir, soap_params, done_queue))
+        for _ in range(args.num_workers)
+    ]
+    
+    for process in processes:
+        process.start()
 
-        # Start processing the dataset
-        num_gens, num_send = process_dataset(
-            h5_test_path,
-            model,
-            input_queue,
-            eval_files_dir,
-            args.num_workers,
-            out_folder=out_folder,
-            debug_max=args.debug_max,
-            debug=args.debug,
-            add_composition=args.add_composition,
-            add_spacegroup=args.add_spacegroup,
-            max_new_tokens=args.max_new_tokens,
-            dataset_name=args.dataset_name,
-            model_name=args.model_name,
-            num_reps=args.num_reps,
-            xrd_parameters=metadata['xrd'],
-            species=metadata['species'],
-            override=args.override,
-            zero_cond=args.zero_cond,
-            temperature=args.temperature,
-            top_k=args.top_k,
-            augment_param_dict=augment_param_dict,
-            exclude_large_soap=args.exclude_large_soap,
-        )
+    # Start processing the dataset
+    num_gens, num_send = process_dataset(
+        h5_test_path,
+        model,
+        input_queue,
+        eval_files_dir,
+        args.num_workers,
+        out_folder=out_folder,
+        debug_max=args.debug_max,
+        debug=args.debug,
+        add_composition=args.add_composition,
+        add_spacegroup=args.add_spacegroup,
+        max_new_tokens=args.max_new_tokens,
+        dataset_name=args.dataset_name,
+        model_name=args.model_name,
+        num_reps=args.num_reps,
+        xrd_parameters=metadata['xrd'],
+        species=metadata['species'],
+        override=args.override,
+        zero_cond=args.zero_cond,
+        temperature=args.temperature,
+        top_k=args.top_k,
+        augment_param_dict=augment_param_dict,
+        exclude_large_soap=args.exclude_large_soap,
+        clean_fwhm=args.clean_fwhm,
+    )
 
-        if num_send > 0:
-            # Create a new progress bar for task completion
-            pbar = tqdm(total=num_gens, desc='Evaluating...', leave=True)
-            # Monitor the done_queue and update the progress bar
-            completed_tasks = 0
-            while completed_tasks < num_gens:
-                try:
-                    # Wait for a task completion signal
-                    done_queue.get(timeout=1)
-                    # Update the progress bar
-                    pbar.update(1)
-                    completed_tasks += 1
-                except Empty:
-                    pass
+    if num_send > 0:
+        # Create a new progress bar for task completion
+        pbar = tqdm(total=num_gens, desc='Evaluating...', leave=True)
+        # Monitor the done_queue and update the progress bar
+        completed_tasks = 0
+        while completed_tasks < num_gens:
+            try:
+                # Wait for a task completion signal
+                done_queue.get(timeout=1)
+                # Update the progress bar
+                pbar.update(1)
+                completed_tasks += 1
+            except Empty:
+                pass
 
-            pbar.close()
+        pbar.close()
 
-        # Join worker processes after processing is complete
-        for process in processes:
-            process.join()
-
-        # Collect results and save them to a Parquet file
-        evaluations = collect_results(eval_files_dir)
-        save_evaluations_to_parquet(evaluations, out_folder, args.dataset_name, time() - start)
-
+    # Join worker processes after processing is complete
+    for process in processes:
+        process.join()
 
 if __name__ == '__main__':
     main()

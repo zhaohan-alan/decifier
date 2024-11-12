@@ -346,7 +346,7 @@ def disc_to_cont_xrd_from_cif(
     # Clip to ensure non-negative intensities
     iq_cont = torch.clamp(iq_cont, min=0.0)
 
-    return {'q': q_cont.numpy(), 'iq': iq_cont.numpy()}
+    return {'q': q_cont.numpy(), 'iq': iq_cont.numpy(), 'q_disc': q_disc.numpy(), 'iq_disc': iq_disc.numpy()}
 
 class RandomBatchSampler(BatchSampler):
     def __init__(self, sampler, batch_size, drop_last):
