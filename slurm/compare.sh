@@ -1,11 +1,10 @@
 #!/bin/bash
-#SBATCH -p gpu --gres=gpu:a100:1
-#SBATCH --time 3-00:00:00
-#SBATCH --job-name=train_CL
+#SBATCH --time 0-12:00:00
+#SBATCH --job-name=compare_deCIFer
 #SBATCH --array 0
 #SBATCH --cpus-per-task=3
-#SBATCH --mem-per-cpu=6G
-#SBATCH --output=logs/train_cl_%A_%a.out
+#SBATCH --mem-per-cpu=12G
+#SBATCH --output=logs/compare_%A_%a.out
 
 # Function to display help message
 usage() {
@@ -25,4 +24,4 @@ ARGS=("$@")
 # Display the arguments
 echo "Arguments passed: ${ARGS[*]}"
 
-python bin/train_cl_embeddings.py "${ARGS[@]}"
+python bin/make_comparisons.py "${ARGS[@]}"
