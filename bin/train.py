@@ -70,7 +70,7 @@ class TrainConfig:
     cl_model_ckpt: Optional[str] = None
     boundary_masking: bool = True
     cond_hidden_size: int = 512
-    cond_num_hidden_layers: int = 1
+    cond_num_hidden_layers: int = 0
     freeze_condition_embedding: bool = False
 
     # Augmentation at training time
