@@ -1,0 +1,12 @@
+output_folder: "test"
+debug_max: 10
+use_deprecated_keys: false
+fingerprint_comparison: true
+structural_diversity: false
+crystal_system_metric_comparison: true
+
+use_saved_data: false
+
+eval_folder_dict:
+  test another: test_eval_files
+  test: test_eval_files

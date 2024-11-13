@@ -3,8 +3,9 @@ debug_max: null
 use_deprecated_keys: false
 fingerprint_comparison: true
 structural_diversity: false
+crystal_system_metric_comparison: true
 
-use_saved_data: false
+use_saved_data: true
 
 eval_folder_dict:
   XRD + no_prompt + 0pct noise + 5pct FWHM: experiments/conditioned_mlp_augmentation/eval_files/noprompt_0pctnoise_5pctfwhm

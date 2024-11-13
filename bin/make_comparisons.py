@@ -137,9 +137,9 @@ def process_file(file_path):
         # Extract space group
         spacegroup_sym = extract_space_group_symbol(cif_gen)
         spacegroup_num = space_group_symbol_to_number(spacegroup_sym)
-        spacegroup_num = int(spacegroup_num) if spacegroup_num is not None else 0
+        spacegroup_num = int(spacegroup_num) if spacegroup_num is not None else np.nan
 
-        return {
+        out_dict = {
             'rwp_dirty': rwp_dirty_value,
             'rwp_clean': rwp_clean_value,
             's12_dirty': s12_dirty_value,
@@ -159,6 +159,7 @@ def process_file(file_path):
             'cif_sample': cif_sample,
             'cif_gen': cif_gen,
         }
+        return out_dict
     except Exception as e:
         print(f"Error processing file {file_path}: {e}")
         return None
@@ -180,14 +181,22 @@ def process(folder, debug_max=None):
 
 def prepare_data_for_plotting(
     eval_folder_dict: Dict[str, str],
+    output_folder: str,
+    use_saved_data: bool,
     debug_max: Optional[int] = None,
 ):
     df_data = {}
     labels = []
     pbar = tqdm(total = len(eval_folder_dict), desc="Processing datasets", leave=False)
     for label, eval_folder in eval_folder_dict.items():
-        df_results = process(eval_folder, debug_max)
-        df_data[label] = df_results
+        if use_saved_data:
+            # Load df_data for this label
+            df_data[label] = load_df_data(output_folder, label)
+        else:
+            df_results = process(eval_folder, debug_max)
+            df_data[label] = df_results
+            # Save df_data
+            save_df_data(df_data[label], output_folder, label)
         labels.append(label)
         pbar.update(1)
     pbar.close()
@@ -299,7 +308,7 @@ def plot_violin_box(
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.set_xticks(np.arange(len(labels)))
-    ax.set_xticklabels(labels, rotation=30, ha='right')
+    ax.set_xticklabels(labels, rotation=90, ha='center')
     if ylim:
         ax.set_ylim(ylim)
 
@@ -329,26 +338,22 @@ def sanitize_label(label):
     label = re.sub(r'[^\w\-_\.]', '', label)
     return label
 
-def save_plotting_data(data_to_save, output_folder, label):
-    """Saves the plotting data for a specific label to a pickle file."""
+def save_df_data(df, output_folder, label):
+    """Saves the DataFrame df_data[label] for a specific label to a pickle file."""
     safe_label = sanitize_label(label)
-    data_file = os.path.join(output_folder, f'fingerprint_plotting_data_{safe_label}.pkl')
-    with open(data_file, 'wb') as f:
-        pickle.dump(data_to_save, f)
+    data_file = os.path.join(output_folder, f'df_data_{safe_label}.pkl')
+    df.to_pickle(data_file)
 
-def load_plotting_data(output_folder, label):
-    """Loads the plotting data for a specific label from a pickle file."""
+def load_df_data(output_folder, label):
+    """Loads the DataFrame df_data[label] for a specific label from a pickle file."""
     safe_label = sanitize_label(label)
-    data_file = os.path.join(output_folder, f'fingerprint_plotting_data_{safe_label}.pkl')
-    with open(data_file, 'rb') as f:
-        data_loaded = pickle.load(f)
-    return data_loaded
+    data_file = os.path.join(output_folder, f'df_data_{safe_label}.pkl')
+    return pd.read_pickle(data_file)
 
 def fingerprint_comparison(
-    df_data,
+    data_dict,
     labels,
     output_folder,
-    use_saved_data=False,
 ) -> None:
 
     metrics = [
@@ -358,23 +363,7 @@ def fingerprint_comparison(
         ('ws_clean', "WS"),
         ('r2_clean', r"$R^{2}$"),
         ('soap_large_distance', "Structural similarity"),
-        ('soap_small_distance', "Structural similarity"),
     ]
-
-    data_dict = {}
-    for label in labels:
-        if use_saved_data:
-            # Load data for this label
-            data_loaded = load_plotting_data(output_folder, label)
-            data_dict[label] = data_loaded
-        else:
-            # Prepare data for this label
-            data_to_save = {}
-            for metric_key, _ in metrics:
-                data_to_save[f'data_{metric_key}'] = df_data[label][metric_key].values
-            # Save the data for this label
-            save_plotting_data(data_to_save, output_folder, label)
-            data_dict[label] = data_to_save
 
     # Now collect data across labels for plotting
     data_list = {metric_key: [] for metric_key, _ in metrics}
@@ -383,8 +372,8 @@ def fingerprint_comparison(
     for label in labels:
         data = data_dict[label]
         for metric_key, _ in metrics:
-            data_list[metric_key].append(data[f'data_{metric_key}'])
-            medians[metric_key][label] = data[f'data_{metric_key}']
+            data_list[metric_key].append(data[f'{metric_key}'])
+            medians[metric_key][label] = data[f'{metric_key}']
 
     # Now plot using the collected data
     fig, axs = plt.subplots(len(metrics),1,figsize=(5, 10), sharex=True)
@@ -403,6 +392,120 @@ def save_figure(
 ):
     fig.savefig(output_path, dpi=200)
 
+def crystal_system_metric_comparison(
+    df_data,
+    labels,
+    output_folder,
+) -> None:
+    # Define the mapping from spacegroup numbers to crystal systems
+    spacegroup_to_crystal_system = {
+        'Triclinic': range(1, 3),      # 1-2 inclusive
+        'Monoclinic': range(3, 16),    # 3-15 inclusive
+        'Orthorhombic': range(16, 75), # 16-74 inclusive
+        'Tetragonal': range(75, 143),  # 75-142 inclusive
+        'Trigonal': range(143, 168),   # 143-167 inclusive
+        'Hexagonal': range(168, 195),  # 168-194 inclusive
+        'Cubic': range(195, 231)       # 195-230 inclusive
+    }
+
+    # Function to map spacegroup number to crystal system
+    def get_crystal_system(spacegroup_number):
+        try:
+            sg_number = int(spacegroup_number)
+            for system, numbers in spacegroup_to_crystal_system.items():
+                if sg_number in numbers:
+                    return system
+            return 'Unknown'
+        except (ValueError, TypeError):
+            return 'Unknown'
+
+    metrics = [
+        ('rwp_clean', r"$R_{wp}$"),
+        ('s12_clean', r"$S_{12}$"),
+        ('hd_clean', "HD"),
+        ('ws_clean', "WS"),
+        ('r2_clean', r"$R^{2}$"),
+        ('soap_large_distance', "SOAP distance"),
+    ]
+
+    crystal_system_order = ['Triclinic', 'Monoclinic', 'Orthorhombic',
+                            'Tetragonal', 'Trigonal', 'Hexagonal', 'Cubic', 'Unknown']
+
+    # Plotting mean values per crystal system across datasets using matplotlib
+    fig, axs = plt.subplots(len(metrics),1,figsize=(14, 10), sharex=True)
+    for i, (metric_key, metric_label) in enumerate(metrics):
+        # Collect mean and median values for each crystal system across datasets
+        mean_dfs = []
+        for label in labels:
+            df_dict = df_data[label].copy()
+            # Convert df_dict to DataFrame
+            if isinstance(df_dict, pd.DataFrame):
+                df = df_dict.copy()
+            elif isinstance(df_dict, dict):
+                # Convert dict to DataFrame
+                df = pd.DataFrame.from_dict(df_dict)
+            else:
+                raise ValueError(f"df_data[{label}] is not a DataFrame or dict")
+            df = df.dropna(subset=['spacegroup_num'])
+            # Map spacegroup numbers to crystal systems
+            df['crystal_system'] = df['spacegroup_num'].apply(get_crystal_system)
+            grouped = df.groupby('crystal_system')
+            mean_values = grouped[metric_key].mean().reset_index()
+            mean_values['Dataset'] = label
+            mean_dfs.append(mean_values)
+
+        # Combine all datasets
+        combined_mean = pd.concat(mean_dfs)
+
+        # Use pandas pivot_table to reshape the data for plotting
+        mean_pivot = combined_mean.pivot(index='crystal_system', columns='Dataset', values=metric_key)
+        mean_pivot = mean_pivot.reindex(crystal_system_order)
+
+        # Plot bars
+        mean_pivot.plot(kind='bar', ax=axs[i])
+        axs[i].set_ylabel(f'Mean {metric_label}')
+    
+    axs[0].set_title(f'Mean Metrics per Crystal System Across Datasets')
+    axs[-1].set_xlabel('Crystal System')
+    plt.xticks(rotation=90)
+    plt.tight_layout()
+        
+    save_figure(fig, os.path.join(output_folder, f"mean_per_crystal_system.png"))
+    
+    # Plotting median values per crystal system across datasets using matplotlib
+    fig, axs = plt.subplots(len(metrics),1,figsize=(14, 10), sharex=True)
+    for i, (metric_key, metric_label) in enumerate(metrics):
+        # Collect median values for each crystal system across datasets
+        median_dfs = []
+        for label in labels:
+            df = df_data[label].copy()
+            df = df.dropna(subset=['spacegroup_num'])
+            # Map spacegroup numbers to crystal systems
+            df['crystal_system'] = df['spacegroup_num'].apply(get_crystal_system)
+            grouped = df.groupby('crystal_system')
+            median_values = grouped[metric_key].median().reset_index()
+            median_values['Dataset'] = label
+            median_dfs.append(median_values)
+
+        # Combine all datasets
+        combined_median = pd.concat(median_dfs)
+
+        # Use pandas pivot_table to reshape the data for plotting
+        median_pivot = combined_median.pivot(index='crystal_system', columns='Dataset', values=metric_key)
+        median_pivot = median_pivot.reindex(crystal_system_order)
+
+        # Plot bars
+        median_pivot.plot(kind='bar', ax=axs[i])
+        axs[i].set_ylabel(f'Median {metric_label}')
+
+    axs[0].set_title(f'Median Metrics per Crystal System Across Datasets')
+    axs[-1].set_xlabel('Crystal System')
+    plt.xticks(rotation=90)
+    plt.tight_layout()
+    plt.show()
+
+    save_figure(fig, os.path.join(output_folder, f"median_per_crystal_system.png"))
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -420,19 +523,13 @@ if __name__ == "__main__":
 
     use_saved_data = yaml_dictconfig.get('use_saved_data', False)
 
-    if use_saved_data:
-        df_data = None
-        labels = list(yaml_dictconfig.eval_folder_dict.keys())
-    else:
-        # Process data
-        df_data, labels = prepare_data_for_plotting(yaml_dictconfig.eval_folder_dict, yaml_dictconfig.debug_max)
+    df_data, labels = prepare_data_for_plotting(yaml_dictconfig.eval_folder_dict, yaml_dictconfig.output_folder, use_saved_data, yaml_dictconfig.get('debug_max', None))
+    
+    if yaml_dictconfig.get('fingerprint_comparison', False):
+        fingerprint_comparison(df_data, labels, yaml_dictconfig.output_folder)
 
-    if yaml_dictconfig.fingerprint_comparison:
-        fingerprint_comparison(df_data, labels, yaml_dictconfig.output_folder, use_saved_data=use_saved_data)
+    if yaml_dictconfig.get('structural_diversity', False):
+        structural_diversity(df_data, labels, yaml_dictconfig.output_folder)
 
-    if yaml_dictconfig.structural_diversity:
-        if df_data is None:
-            # Cannot proceed with structural_diversity without df_data
-            print("Cannot perform structural_diversity without processing data.")
-        else:
-            structural_diversity(df_data, labels, yaml_dictconfig.output_folder)
+    if yaml_dictconfig.get('crystal_system_metric_comparison', False):
+        crystal_system_metric_comparison(df_data, labels, yaml_dictconfig.output_folder)
