@@ -50,6 +50,7 @@ class DeciferConfig:
     boundary_masking: bool = True
     cl_model_ckpt: Optional[str] = None
     cond_hidden_size: int = 512
+    cond_num_hidden_layers: int = 1
     freeze_condition_embedding: bool = False
 
 class LayerNorm(nn.Module):
@@ -249,8 +250,23 @@ class Decifer(nn.Module):
             cond_embedding = nn.Sequential(
                 nn.Linear(config.cond_size, config.cond_hidden_size),
                 nn.ReLU(),
-                nn.Linear(config.cond_hidden_size, config.n_embd),
+                *[
+                    nn.Sequential(nn.Linear(config.cond_hidden_size, config.cond_hidden_size), nn.ReLU())
+                    for _ in range(config.cond_num_hidden_layers)
+                ],
+                nn.Linear(config.cond_hidden_size, config.n_embd)
             )
+            # cond_embedding = nn.Sequential(
+            #     nn.Linear(config.cond_size, config.cond_hidden_size),
+            #     nn.ReLU(),
+            #     *[nn.Sequential(nn.Linear(config.cond_hidden_size, config.cond_hidden_size), nn.ReLU())] * config.cond_num_hidden_layers,
+            #     nn.Linear(config.cond_hidden_size, config.n_embd)
+            # )
+            # cond_embedding = nn.Sequential(
+            #     nn.Linear(config.cond_size, config.cond_hidden_size),
+            #     nn.ReLU(),
+            #     nn.Linear(config.cond_hidden_size, config.n_embd),
+            # )
         else:
             cond_embedding = nn.Identity() # nn's version of None
         

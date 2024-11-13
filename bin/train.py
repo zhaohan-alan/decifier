@@ -70,6 +70,7 @@ class TrainConfig:
     cl_model_ckpt: Optional[str] = None
     boundary_masking: bool = True
     cond_hidden_size: int = 512
+    cond_num_hidden_layers: int = 1
     freeze_condition_embedding: bool = False
 
     # Augmentation at training time
@@ -184,10 +185,13 @@ if __name__ == "__main__":
     }
 
     # Load CLEncoder model path if it exists
-    if C.cl_model_ckpt is not None:
-        cl_model_ckpt = C.cl_model_ckpt
+    if C.condition_with_cl_emb:
+        if C.cl_model_ckpt is not None:
+            cl_model_ckpt = C.cl_model_ckpt
+        else:
+            cl_model_ckpt = metadata['cl_embeddings']['model_path']
     else:
-        cl_model_ckpt = metadata['cl_embeddings']['model_path']
+        cl_model_ckpt = None
 
     # Cond size from augmentation kwargs
     C.cond_size = len(np.arange(augmentation_kwargs['qmin'], augmentation_kwargs['qmax'], augmentation_kwargs['qstep']))
@@ -247,6 +251,7 @@ if __name__ == "__main__":
         boundary_masking=C.boundary_masking,
         cl_model_ckpt = cl_model_ckpt,
         cond_hidden_size = C.cond_hidden_size,
+        cond_num_hidden_layers = C.cond_num_hidden_layers,
         freeze_condition_embedding = C.freeze_condition_embedding,
     )
 
