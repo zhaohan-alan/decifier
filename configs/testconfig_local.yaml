@@ -1,4 +1,4 @@
-out_dir: 'testing_refactored_cl_emb'
+out_dir: 'testing_deeper_mlp'
 eval_interval: 10  # how often to evaluate against the validation set
 eval_iters_train: 10
 eval_iters_val: 10
@@ -35,7 +35,9 @@ warmup_iters: 10
 
 early_stopping_patience: 5
 
-condition_with_mlp_emb: False
-condition_with_cl_emb: True
-cl_model_ckpt: 'cl_bs512_10000/ckpt.pt'
+condition_with_mlp_emb: True
+cond_hidden_size: 512
+cond_num_hidden_layers: 1
+
+condition_with_cl_emb: False
 boundary_masking: True

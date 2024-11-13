@@ -9,6 +9,7 @@ logs/
 
 # Ignore experiments
 experiments/
+experiments_old/
 cl_experiments/
 
 # Ignore egg folders

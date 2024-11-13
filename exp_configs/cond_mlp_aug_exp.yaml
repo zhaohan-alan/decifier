@@ -5,7 +5,7 @@ fingerprint_comparison: true
 structural_diversity: false
 crystal_system_metric_comparison: true
 
-use_saved_data: false
+use_saved_data: true
 
 eval_folder_dict:
   XRD + no_prompt + 0pct noise + 5pct FWHM: experiments/conditioned_mlp_augmentation/eval_files/noprompt_0pctnoise_5pctfwhm
@@ -17,3 +17,15 @@ eval_folder_dict:
   XRD + composition + spacegroup + 1ppt noise + 10pct FWHM: experiments/conditioned_mlp_augmentation/eval_files/composition_spacegroup_1pptnoise_10pctfwhm
   XRD + composition + spacegroup + 1pct noise + 10pct FWHM: experiments/conditioned_mlp_augmentation/eval_files/composition_spacegroup_1pctnoise_10pctfwhm
   XRD + composition + spacegroup + 5pct noise + 10pct FWHM: experiments/conditioned_mlp_augmentation/eval_files/composition_spacegroup_5pctnoise_10pctfwhm
+
+names: [
+  X+0p0+5p0,
+  X+C+0p0+5p0,
+  X+C+S+0p0+5p0,
+  X+C+S+0p1+5p0,
+  X+C+S+1p0+5p0,
+  X+C+S+5p0+5p0,
+  X+C+S+0p1+10p0,
+  X+C+S+1p0+10p0,
+  X+C+S+5p0+10p0,
+]
