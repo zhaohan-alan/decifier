@@ -3,7 +3,7 @@ eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200
 eval_iters_val: 200
 log_interval: 1  # how often to print to the console (1 = every iteration)
-init_from: 'scratch'
+init_from: 'resume'
 
 device: 'cuda'
 compile: False

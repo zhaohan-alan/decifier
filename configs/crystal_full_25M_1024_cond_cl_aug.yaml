@@ -1,4 +1,4 @@
-out_dir: 'cond_mlp_aug'
+out_dir: 'cond_cl_aug'
 eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200
 eval_iters_val: 200
@@ -35,7 +35,8 @@ warmup_iters: 100
 
 early_stopping_patience: 50
 
-condition_with_mlp_emb: True
-condition_with_cl_emb: False
+condition_with_mlp_emb: False
+condition_with_cl_emb: True
+cl_model_ckpt: 'cl_512bs_8pd_500k/ckpt.pt'
 boundary_masking: True
 
