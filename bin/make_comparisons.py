@@ -16,7 +16,6 @@ from scipy.spatial.distance import directed_hausdorff
 from scipy.stats import wasserstein_distance
 
 from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
 from umap import UMAP
 
 from omegaconf import OmegaConf
@@ -318,91 +317,119 @@ def plot_histogram(
     ax.legend(fontsize=8)
     ax.grid(alpha=0.2)
 
+def save_plotting_data(data_to_save, output_folder):
+    """Saves the plotting data to a pickle file."""
+    data_file = os.path.join(output_folder, 'fingerprint_plotting_data.pkl')
+    with open(data_file, 'wb') as f:
+        pickle.dump(data_to_save, f)
+
+def load_plotting_data(output_folder):
+    """Loads the plotting data from a pickle file."""
+    data_file = os.path.join(output_folder, 'fingerprint_plotting_data.pkl')
+    with open(data_file, 'rb') as f:
+        data_loaded = pickle.load(f)
+    return data_loaded
+
 def fingerprint_comparison(
     df_data,
     labels,
     output_folder,
+    use_saved_data=False,
 ) -> None:
+    if use_saved_data:
+        # Load data from saved file
+        data_loaded = load_plotting_data(output_folder)
+        data_rwp_clean = data_loaded['data_rwp_clean']
+        medians_rwp_clean = data_loaded['medians_rwp_clean']
+        data_s12_clean = data_loaded['data_s12_clean']
+        medians_s12_clean = data_loaded['medians_s12_clean']
+        data_hd_clean = data_loaded['data_hd_clean']
+        medians_hd_clean = data_loaded['medians_hd_clean']
+        data_ws_clean = data_loaded['data_ws_clean']
+        medians_ws_clean = data_loaded['medians_ws_clean']
+        data_r2_clean = data_loaded['data_r2_clean']
+        medians_r2_clean = data_loaded['medians_r2_clean']
+        data_soap_large_distance = data_loaded['data_soap_large_distance']
+        medians_soap_large_distance = data_loaded['medians_soap_large_distance']
+        data_soap_small_distance = data_loaded['data_soap_small_distance']
+        medians_soap_small_distance = data_loaded['medians_soap_small_distance']
+        labels = data_loaded['labels']
+    else:
+        # Collect data for plotting
+        data_rwp_clean = [df_data[label]['rwp_clean'].values for label in labels]
+        medians_rwp_clean = {label: df_data[label]['rwp_clean'].values for label in labels}
 
-    # Clean
-    fig, (ax1, ax2, ax3, ax4, ax5, ax6, ax7) = plt.subplots(7,1,figsize=(5, 10), sharex=True)
+        data_s12_clean = [df_data[label]['s12_clean'].values for label in labels]
+        medians_s12_clean = {label: df_data[label]['s12_clean'].values for label in labels}
 
-    data_rwp_clean = [df_data[label]['rwp_clean'].values for label in labels]
-    medians_rwp_clean = {label: df_data[label]['rwp_clean'].values for label in labels}
+        data_hd_clean = [df_data[label]['hd_clean'].values for label in labels]
+        medians_hd_clean = {label: df_data[label]['hd_clean'].values for label in labels}
+
+        data_ws_clean = [df_data[label]['ws_clean'].values for label in labels]
+        medians_ws_clean = {label: df_data[label]['ws_clean'].values for label in labels}
+
+        data_r2_clean = [df_data[label]['r2_clean'].values for label in labels]
+        medians_r2_clean = {label: df_data[label]['r2_clean'].values for label in labels}
+
+        data_soap_large_distance = [df_data[label]['soap_large_distance'].values for label in labels]
+        medians_soap_large_distance = {label: df_data[label]['soap_large_distance'].values for label in labels}
+
+        data_soap_small_distance = [df_data[label]['soap_small_distance'].values for label in labels]
+        medians_soap_small_distance = {label: df_data[label]['soap_small_distance'].values for label in labels}
+
+        # Save the data for future use
+        data_to_save = {
+            'data_rwp_clean': data_rwp_clean,
+            'medians_rwp_clean': medians_rwp_clean,
+            'data_s12_clean': data_s12_clean,
+            'medians_s12_clean': medians_s12_clean,
+            'data_hd_clean': data_hd_clean,
+            'medians_hd_clean': medians_hd_clean,
+            'data_ws_clean': data_ws_clean,
+            'medians_ws_clean': medians_ws_clean,
+            'data_r2_clean': data_r2_clean,
+            'medians_r2_clean': medians_r2_clean,
+            'data_soap_large_distance': data_soap_large_distance,
+            'medians_soap_large_distance': medians_soap_large_distance,
+            'data_soap_small_distance': data_soap_small_distance,
+            'medians_soap_small_distance': medians_soap_small_distance,
+            'labels': labels,
+        }
+        save_plotting_data(data_to_save, output_folder)
+
+    # Now plot using the data
+    fig, axs = plt.subplots(7,1,figsize=(5, 10), sharex=True)
+    ax1, ax2, ax3, ax4, ax5, ax6, ax7 = axs
 
     plot_violin_box(data_rwp_clean, labels, ylabel=r"$R_{wp}$", title="Fingerprints", ax=ax1,
-                    medians = medians_rwp_clean)
-
-    del data_rwp_clean
-    del medians_rwp_clean
-
-    data_s12_clean = [df_data[label]['s12_clean'].values for label in labels]
-    medians_s12_clean = {label: df_data[label]['s12_clean'].values for label in labels}
+                    medians=medians_rwp_clean)
 
     plot_violin_box(data_s12_clean, labels, ylabel=r"$S_{12}$", title="", ax=ax2,
-                    medians = medians_s12_clean)
-    
-    del data_s12_clean
-    del medians_s12_clean
-    
-    data_hd_clean = [df_data[label]['hd_clean'].values for label in labels]
-    medians_hd_clean = {label: df_data[label]['hd_clean'].values for label in labels}
+                    medians=medians_s12_clean)
 
     plot_violin_box(data_hd_clean, labels, ylabel="HD", title="", ax=ax3,
-                    medians = medians_hd_clean)
-
-    del data_hd_clean
-    del medians_hd_clean
-    
-    data_ws_clean = [df_data[label]['ws_clean'].values for label in labels]
-    medians_ws_clean = {label: df_data[label]['ws_clean'].values for label in labels}
+                    medians=medians_hd_clean)
 
     plot_violin_box(data_ws_clean, labels, ylabel="WS", title="", ax=ax4,
-                    medians = medians_ws_clean)
-
-    del data_ws_clean
-    del medians_ws_clean
-    
-    data_r2_clean = [df_data[label]['r2_clean'].values for label in labels]
-    medians_r2_clean = {label: df_data[label]['r2_clean'].values for label in labels}
+                    medians=medians_ws_clean)
 
     plot_violin_box(data_r2_clean, labels, ylabel=r"$R^{2}$", title="", ax=ax5,
-                    medians = medians_r2_clean)
-    
-    del data_r2_clean
-    del medians_r2_clean
-    
-    # SOAP (large descriptor) distance plot
-    data_soap_large_distance = [df_data[label]['soap_large_distance'].values for label in labels]
-    medians_soap_large_distance = {label: df_data[label]['soap_large_distance'].values for label in labels}
+                    medians=medians_r2_clean)
 
-    fig, ax = plt.subplots(figsize=(10, 5))
     plot_violin_box(data_soap_large_distance, labels, ylabel="Structural similarity", title="", ax=ax6,
-                    medians = medians_soap_large_distance)
+                    medians=medians_soap_large_distance)
 
-    del data_soap_large_distance
-    del medians_soap_large_distance
-
-    # SOAP (small descriptor) distance plot
-    data_soap_small_distance = [df_data[label]['soap_small_distance'].values for label in labels]
-    medians_soap_small_distance = {label: df_data[label]['soap_small_distance'].values for label in labels}
-
-    fig, ax = plt.subplots(figsize=(10, 5))
     plot_violin_box(data_soap_small_distance, labels, ylabel="Structural similarity", title="", ax=ax7,
-                    medians = medians_soap_small_distance)
+                    medians=medians_soap_small_distance)
 
-    del data_soap_small_distance
-    del medians_soap_small_distance
-
+    plt.tight_layout()
     plt.show()
-
     save_figure(fig, os.path.join(output_folder, "fingerprint_violin.png"))
 
 def save_figure(
     fig,
     output_path,
 ):
-    fig.tight_layout()
     fig.savefig(output_path, dpi=200)
 
 if __name__ == "__main__":
@@ -419,10 +446,17 @@ if __name__ == "__main__":
     
     # Create output folder
     os.makedirs(yaml_dictconfig.output_folder, exist_ok=True)
-    df_data, labels = prepare_data_for_plotting(yaml_dictconfig.eval_folder_dict, yaml_dictconfig.debug_max)
+
+    if yaml_dictconfig.use_saved_data:
+        # Skip processing and set df_data and labels to None
+        df_data = None
+        labels = None
+    else:
+        # Process data
+        df_data, labels = prepare_data_for_plotting(yaml_dictconfig.eval_folder_dict, yaml_dictconfig.debug_max)
 
     if yaml_dictconfig.fingerprint_comparison:
-        fingerprint_comparison(df_data, labels, yaml_dictconfig.output_folder)
+        fingerprint_comparison(df_data, labels, yaml_dictconfig.output_folder, use_saved_data=yaml_dictconfig.use_saved_data)
 
     if yaml_dictconfig.structural_diversity:
         structural_diversity(df_data, labels, yaml_dictconfig.output_folder)
