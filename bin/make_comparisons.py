@@ -10,6 +10,7 @@ import seaborn as sns
 import gzip
 import pickle
 import re
+import subprocess
 
 from scipy.integrate import simpson
 from scipy.stats import ks_2samp
@@ -20,7 +21,7 @@ from sklearn.decomposition import PCA
 from umap import UMAP
 
 from omegaconf import OmegaConf
-from typing import Dict, Optional
+from typing import Optional
 
 from decifer.utility import extract_space_group_symbol, space_group_symbol_to_number
 
@@ -94,8 +95,8 @@ def process_file(file_path):
 
         # Full validity check
         valid = all([formula_validity, bond_length_validity, spacegroup_validity, site_multiplicity_validity])
-        if not valid:
-            return None
+        #if not valid:
+        #    return None
 
         # Extract CIFs and descriptors
         cif_sample = row['cif_sample']
@@ -123,6 +124,8 @@ def process_file(file_path):
         soap_large_sample = row['descriptors']['soap_large_sample']
         soap_large_gen = row['descriptors']['soap_large_gen']
 
+        seq_len = row['seq_len']
+
         # Calculate metrics
         rwp_dirty_value = rwp(xrd_dirty_from_sample, xrd_clean_from_gen)
         rwp_clean_value = rwp(xrd_clean_from_sample, xrd_clean_from_gen)
@@ -135,9 +138,14 @@ def process_file(file_path):
         distance_large = soap_distance(soap_large_sample, soap_large_gen)
 
         # Extract space group
-        spacegroup_sym = extract_space_group_symbol(cif_gen)
-        spacegroup_num = space_group_symbol_to_number(spacegroup_sym)
-        spacegroup_num = int(spacegroup_num) if spacegroup_num is not None else np.nan
+        spacegroup_sym_sample = extract_space_group_symbol(cif_sample)
+        spacegroup_num_sample = space_group_symbol_to_number(spacegroup_sym_sample)
+        spacegroup_num_sample = int(spacegroup_num_sample) if spacegroup_num_sample is not None else np.nan
+
+        spacegroup_sym_gen = extract_space_group_symbol(cif_gen)
+        spacegroup_num_gen = space_group_symbol_to_number(spacegroup_sym_gen)
+        spacegroup_num_gen = int(spacegroup_num_gen) if spacegroup_num_gen is not None else np.nan
+        
 
         out_dict = {
             'rwp_dirty': rwp_dirty_value,
@@ -154,17 +162,25 @@ def process_file(file_path):
             'xrd_dirty_from_sample': xrd_dirty_from_sample,
             'xrd_clean_from_sample': xrd_clean_from_sample,
             'xrd_clean_from_gen': xrd_clean_from_gen,
-            'spacegroup_sym': spacegroup_sym,
-            'spacegroup_num': spacegroup_num,
+            'spacegroup_sym_sample': spacegroup_sym_sample,
+            'spacegroup_num_sample': spacegroup_num_sample,
+            'spacegroup_sym_gen': spacegroup_sym_gen,
+            'spacegroup_num_gen': spacegroup_num_gen,
             'cif_sample': cif_sample,
             'cif_gen': cif_gen,
+            'seq_len': seq_len,
+            'formula_validity': formula_validity,
+            'spacegroup_validity': spacegroup_validity,
+            'bond_length_validity': bond_length_validity,
+            'site_multiplicity_validity': site_multiplicity_validity,
+            'validity': valid,
         }
         return out_dict
     except Exception as e:
         print(f"Error processing file {file_path}: {e}")
         return None
 
-def process(folder, debug_max=None):
+def process(folder, debug_max=None) -> pd.DataFrame:
     """Processes all files in the given folder using multiprocessing."""
     # Get list of files
     files = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.pkl.gz')]
@@ -178,30 +194,6 @@ def process(folder, debug_max=None):
     # Filter out None results and convert to DataFrame
     data_list = [res for res in results if res is not None]
     return pd.DataFrame(data_list)
-
-def prepare_data_for_plotting(
-    eval_folder_dict: Dict[str, str],
-    output_folder: str,
-    use_saved_data: bool,
-    debug_max: Optional[int] = None,
-):
-    df_data = {}
-    labels = []
-    pbar = tqdm(total = len(eval_folder_dict), desc="Processing datasets", leave=False)
-    for label, eval_folder in eval_folder_dict.items():
-        if use_saved_data:
-            # Load df_data for this label
-            df_data[label] = load_df_data(output_folder, label)
-        else:
-            df_results = process(eval_folder, debug_max)
-            df_data[label] = df_results
-            # Save df_data
-            save_df_data(df_data[label], output_folder, label)
-        labels.append(label)
-        pbar.update(1)
-    pbar.close()
-
-    return df_data, labels
 
 def plot_2d_scatter(
     data,
@@ -293,12 +285,12 @@ def plot_violin_box(
     ylabel,
     title,
     ax,
-    cut = 0,
+    cut = 2,
     medians=None,
     ylim = None,
 ):
-    sns.violinplot(data = data, cut = cut, ax=ax)
-    sns.boxplot(data = data, whis = 1.5, fliersize = 2, linewidth = 1.5, boxprops = dict(alpha=0.2), ax=ax)
+    sns.violinplot(data=pd.DataFrame(data).T, cut=cut, ax=ax)
+    sns.boxplot(data=pd.DataFrame(data).T, whis=1.5, fliersize=2, linewidth=1.5, boxprops=dict(alpha=0.2), ax=ax)
     if medians:
         for i, label in enumerate(labels):
             med_value = np.median(medians[label])
@@ -308,7 +300,7 @@ def plot_violin_box(
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.set_xticks(np.arange(len(labels)))
-    ax.set_xticklabels(labels, rotation=90, ha='center')
+    ax.set_xticklabels(labels, rotation=30, ha='right')
     if ylim:
         ax.set_ylim(ylim)
 
@@ -338,18 +330,6 @@ def sanitize_label(label):
     label = re.sub(r'[^\w\-_\.]', '', label)
     return label
 
-def save_df_data(df, output_folder, label):
-    """Saves the DataFrame df_data[label] for a specific label to a pickle file."""
-    safe_label = sanitize_label(label)
-    data_file = os.path.join(output_folder, f'df_data_{safe_label}.pkl')
-    df.to_pickle(data_file)
-
-def load_df_data(output_folder, label):
-    """Loads the DataFrame df_data[label] for a specific label from a pickle file."""
-    safe_label = sanitize_label(label)
-    data_file = os.path.join(output_folder, f'df_data_{safe_label}.pkl')
-    return pd.read_pickle(data_file)
-
 def fingerprint_comparison(
     data_dict,
     labels,
@@ -378,9 +358,22 @@ def fingerprint_comparison(
     # Now plot using the collected data
     fig, axs = plt.subplots(len(metrics),1,figsize=(5, 10), sharex=True)
     for i, (metric_key, ylabel) in enumerate(metrics):
+
         ax = axs[i]
-        plot_violin_box(data_list[metric_key], labels, ylabel=ylabel, title="Fingerprints" if i == 0 else "", ax=ax,
+        # Ensure data is structured as a list of lists
+        structured_data = [series.dropna().tolist() for series in data_list[metric_key]]
+        
+        # Skip if all data is empty
+        if all(len(d) == 0 for d in structured_data):
+            print(f"Skipping {metric_key} due to empty data")
+            continue
+        
+        plot_violin_box(structured_data, labels, ylabel=ylabel, title="Fingerprints" if i == 0 else "", ax=ax,
                         medians=medians[metric_key])
+
+        # ax = axs[i]
+        # plot_violin_box(data_list[metric_key], labels, ylabel=ylabel, title="Fingerprints" if i == 0 else "", ax=ax,
+        #                 medians=medians[metric_key])
 
     plt.tight_layout()
     plt.show()
@@ -421,11 +414,11 @@ def crystal_system_metric_comparison(
 
     metrics = [
         ('rwp_clean', r"$R_{wp}$"),
-        ('s12_clean', r"$S_{12}$"),
-        ('hd_clean', "HD"),
+        # ('s12_clean', r"$S_{12}$"),
+        # ('hd_clean', "HD"),
         ('ws_clean', "WS"),
-        ('r2_clean', r"$R^{2}$"),
-        ('soap_large_distance', "SOAP distance"),
+        # ('r2_clean', r"$R^{2}$"),
+        # ('soap_large_distance', "SOAP distance"),
     ]
 
     crystal_system_order = ['Triclinic', 'Monoclinic', 'Orthorhombic',
@@ -506,6 +499,199 @@ def crystal_system_metric_comparison(
 
     save_figure(fig, os.path.join(output_folder, f"median_per_crystal_system.png"))
 
+def plot_metrics_vs_cif_length_histogram(
+    df_data,
+    labels,
+    output_folder,
+    num_bins=250,
+) -> None:
+
+    # Define the metrics you want to plot
+    metrics = [
+        ('rwp_clean', r"$R_{wp}$"),
+        ('ws_clean', "WS"),
+        # Add more metrics if needed
+    ]
+
+    # Combine dataframes and add a 'Dataset' column
+    combined_df_list = []
+    for label in labels:
+        df = df_data[label].copy()
+        df['Dataset'] = label
+        # Compute length of 'cif_gen' string
+        df['cif_gen_length'] = df['cif_gen'].apply(lambda x: len(str(x)) if x is not None else 0)
+        combined_df_list.append(df)
+    combined_df = pd.concat(combined_df_list, ignore_index=True)
+    
+    # Ensure 'cif_gen_length' and metrics are numeric
+    combined_df['cif_gen_length'] = pd.to_numeric(combined_df['cif_gen_length'], errors='coerce')
+
+    # Drop rows with missing values
+    combined_df.dropna(subset=['cif_gen_length'], inplace=True)
+    
+    # Plotting mean values per crystal system across datasets using matplotlib
+    fig, axs = plt.subplots(len(metrics),1,figsize=(14, 10), sharex=True)
+    for i, (metric_key, metric_label) in enumerate(metrics):
+
+        # Drop rows with missing metric values
+        metric_df = combined_df.dropna(subset=[metric_key])
+
+        # Bin the 'cif_gen_length' into 'num_bins' bins and calculate the mean of the metric
+        metric_df['length_bin'] = pd.cut(metric_df['cif_gen_length'], bins=num_bins)
+        grouped = metric_df.groupby('length_bin').agg(
+            mean_metric=(metric_key, 'mean'),
+            bin_center=('cif_gen_length', lambda x: (x.min() + x.max()) / 2)
+        ).reset_index()
+
+        # Plot using seaborn.barplot
+        sns.barplot(
+            data=grouped,
+            x='bin_center',
+            y='mean_metric',
+            ax=axs[i],
+            edgecolor='black',
+            color='skyblue'
+        )
+
+        axs[i].set_ylabel(f'Mean {metric_label}')
+    
+    axs[0].set_title(f'Mean Metrics vs CIF Generated Length')
+    plt.xticks(rotation=45, ha='right')
+    axs[-1].set_xlabel('CIF Generated Length Bins')
+    fig.tight_layout()
+    plt.show()
+    filename = os.path.join(output_folder, f'{metric_key}_mean_vs_cif_gen_length_histogram.png')
+    plt.savefig(filename, dpi=200, bbox_inches='tight')
+
+def extract_validity_stats(df):
+    validity_columns = [
+        'formula_validity',
+        'spacegroup_validity',
+        'bond_length_validity',
+        'site_multiplicity_validity'
+    ]
+    
+    # Ensure the columns are treated as boolean
+    df[validity_columns] = df[validity_columns].astype(bool)
+    
+    # Calculate the percentage of valid entries for each metric
+    validity_stats = df[validity_columns].mean() * 100
+
+    return validity_stats
+
+def escape_underscores(text):
+    """Escape underscores in text to avoid LaTeX interpretation as subscript."""
+    return text.replace("_", r"\_")
+
+def replace_underscores(text, replace_with=' '):
+    """Escape underscores in text to avoid LaTeX interpretation as subscript."""
+    return text.replace("_", replace_with)
+
+def latex_to_png(latex_code, output_filename='output.png', dpi=300):
+    # Step 1: Write LaTeX code to a .tex file
+    tex_filename = 'latex_input.tex'
+    with open(tex_filename, 'w') as f:
+        f.write(r"""
+        \documentclass{standalone}
+        \usepackage{amsmath, booktabs}
+        \begin{document}
+        """ + latex_code + r"""
+        \end{document}
+        """)
+
+    try:
+        # Step 2: Compile the .tex file to a DVI file using `latex`
+        subprocess.run(['latex', tex_filename], check=True)
+
+        # Step 3: Convert the .dvi file to PNG using `dvipng`
+        dvi_filename = tex_filename.replace('.tex', '.dvi')
+        subprocess.run(['dvipng', '-D', str(dpi), '-T', 'tight', '-o', output_filename, dvi_filename], check=True)
+
+        print(f"PNG image successfully created: {output_filename}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred: {e}")
+    finally:
+        # Optional: Clean up the intermediate files (DVI, AUX, LOG)
+        for ext in ['aux', 'log', 'dvi', 'tex']:
+            if os.path.exists(f'latex_input.{ext}'):
+                os.remove(f'latex_input.{ext}')
+
+def validity_comparison(
+    df_data,
+    labels,
+    output_folder,
+    names = None,
+):
+    results = []
+    for label in labels:
+        validity_stats = extract_validity_stats(df_data[label])
+        validity_stats['Dataset'] = escape_underscores(label)
+        results.append(validity_stats)
+
+    # Combine all results into a DataFrame
+    results_df = pd.DataFrame(results)
+    results_df = results_df[[
+        'Dataset',
+        'formula_validity',
+        'spacegroup_validity',
+        'bond_length_validity',
+        'site_multiplicity_validity'
+    ]] 
+    
+    max_values = results_df[[
+        'formula_validity',
+        'spacegroup_validity',
+        'bond_length_validity',
+        'site_multiplicity_validity'
+    ]].max() 
+    
+    # Create LaTeX-like string to display
+    table_str = r"""
+    \begin{tabular}{lcccc}
+    \midrule
+    \text{Dataset} & \text{Formula Validity (\%)}$\;\uparrow$ & \text{Spacegroup Validity (\%)}$\;\uparrow$ & \text{Bond Length Validity (\%)}$\;\uparrow$ & \text{Site Multiplicity Validity (\%)}$\;\uparrow$ \\
+    \midrule
+    """
+
+    # Add rows from DataFrame to the LaTeX string, bold the maximum values
+    for idx, row in results_df.iterrows():
+        if names is not None and len(names) > idx:
+            row['Dataset'] = replace_underscores(names[idx])
+
+        table_str += f"\\text{{{row['Dataset']}}} & "
+
+        # Formula Validity
+        if row['formula_validity'] == max_values['formula_validity']:
+            table_str += f"\\textbf{{{row['formula_validity']:.2f}}} & "
+        else:
+            table_str += f"{row['formula_validity']:.2f} & "
+        
+        # Spacegroup Validity
+        if row['spacegroup_validity'] == max_values['spacegroup_validity']:
+            table_str += f"\\textbf{{{row['spacegroup_validity']:.2f}}} & "
+        else:
+            table_str += f"{row['spacegroup_validity']:.2f} & "
+
+        # Bond Length Validity
+        if row['bond_length_validity'] == max_values['bond_length_validity']:
+            table_str += f"\\textbf{{{row['bond_length_validity']:.2f}}} & "
+        else:
+            table_str += f"{row['bond_length_validity']:.2f} & "
+
+        # Site Multiplicity Validity
+        if row['site_multiplicity_validity'] == max_values['site_multiplicity_validity']:
+            table_str += f"\\textbf{{{row['site_multiplicity_validity']:.2f}}} \\\\\n"
+        else:
+            table_str += f"{row['site_multiplicity_validity']:.2f} \\\\\n"
+
+    # Close the table
+    table_str += r"\bottomrule" + "\n"
+    table_str += r"\end{tabular}"
+
+    latex_to_png(table_str, output_filename=os.path.join(output_folder, "validity.png"))
+    
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -521,12 +707,33 @@ if __name__ == "__main__":
     # Create output folder
     os.makedirs(yaml_dictconfig.output_folder, exist_ok=True)
 
+    # Figure out whether we need to generate the data
     use_saved_data = yaml_dictconfig.get('use_saved_data', False)
 
-    df_data, labels = prepare_data_for_plotting(yaml_dictconfig.eval_folder_dict, yaml_dictconfig.output_folder, use_saved_data, yaml_dictconfig.get('debug_max', None))
+    df_data = {}
+    if use_saved_data:
+        # Use pickle dict to plot with
+        for label, pickle_path in yaml_dictconfig.pickle_dict.items():
+            df_data[label] = pd.read_pickle(pickle_path)
+        labels = yaml_dictconfig.pickle_dict.keys()
+    else:
+        # Use eval folder dict to save as pickles and make new picle dict
+        for label, eval_folder_path in yaml_dictconfig.eval_folder_dict.items():
+            df_data[label] = process(eval_folder_path, yaml_dictconfig.debug_max)
+            safe_label = label.replace(' ', '_')
+            safe_label = re.sub(r'[^\w\-_\.]', '', safe_label)
+            pickle_path = os.path.join(yaml_dictconfig.output_folder, f'{safe_label}.pkl')
+            pd.DataFrame(df_data[label]).to_pickle(pickle_path)
+        labels = yaml_dictconfig.eval_folder_dict.keys()
+
+    if yaml_dictconfig.get('validity_comparison', False):
+        validity_comparison(df_data, labels, yaml_dictconfig.output_folder)
     
     if yaml_dictconfig.get('fingerprint_comparison', False):
         fingerprint_comparison(df_data, labels, yaml_dictconfig.output_folder)
+
+    if yaml_dictconfig.get('metrics_vs_seq_len', False):
+        plot_metrics_vs_cif_length_histogram(df_data, labels, yaml_dictconfig.output_folder)
 
     if yaml_dictconfig.get('structural_diversity', False):
         structural_diversity(df_data, labels, yaml_dictconfig.output_folder)
