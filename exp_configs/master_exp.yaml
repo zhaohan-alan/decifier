@@ -1,0 +1,44 @@
+output_folder: "master_experiment"
+debug_max: null
+use_deprecated_keys: false
+fingerprint_comparison: true
+structural_diversity: false
+crystal_system_metric_comparison: false
+metrics_vs_seq_len: false
+
+use_saved_data: true
+
+pickle_dict:
+  uncond: experiments/no_conditioning_with_boundary_masking/comparisons/df_data_no_prompt.pkl
+  uncond + C: experiments/no_conditioning_with_boundary_masking/comparisons/df_data_composition.pkl
+  uncond + C + S: experiments/no_conditioning_with_boundary_masking/comparisons/df_data_composition__spacegroup.pkl
+
+  aug X: experiments/conditioned_mlp_augmentation/comparisons/df_data_XRD__no_prompt__0pct_noise__5pct_FWHM.pkl
+  aug X + C: experiments/conditioned_mlp_augmentation/comparisons/df_data_XRD__composition__0pct_noise__5pct_FWHM.pkl
+  aug X + C + S: experiments/conditioned_mlp_augmentation/comparisons/df_data_XRD__composition__spacegroup__0pct_noise__5pct_FWHM.pkl
+  aug X + C + S + 01N + 5F: experiments/conditioned_mlp_augmentation/comparisons/df_data_XRD__composition__spacegroup__1ppt_noise__5pct_FWHM.pkl
+  aug X + C + S + 1N + 5F: experiments/conditioned_mlp_augmentation/comparisons/df_data_XRD__composition__spacegroup__1pct_noise__5pct_FWHM.pkl
+  aug X + C + S + 5N + 5F: experiments/conditioned_mlp_augmentation/comparisons/df_data_XRD__composition__spacegroup__5pct_noise__5pct_FWHM.pkl
+  aug X + C + S + 01N + 10F: experiments/conditioned_mlp_augmentation/comparisons/df_data_XRD__composition__spacegroup__1ppt_noise__10pct_FWHM.pkl
+  aug X + C + S + 1N + 10F: experiments/conditioned_mlp_augmentation/comparisons/df_data_XRD__composition__spacegroup__1pct_noise__10pct_FWHM.pkl
+  aug X + C + S + 5N + 10F: experiments/conditioned_mlp_augmentation/comparisons/df_data_XRD__composition__spacegroup__5pct_noise__10pct_FWHM.pkl
+  
+  clean X: experiments/conditioned_mlp_clean/comparisons/df_data_XRD__no_prompt__0pct_noise__5pct_FWHM.pkl
+  #clean X + C: experiments/conditioned_mlp_clean/comparisons/df_data_XRD__composition__0pct_noise__5pct_FWHM.pkl
+  clean X + C + S: experiments/conditioned_mlp_clean/comparisons/df_data_XRD__composition__spacegroup__0pct_noise__5pct_FWHM.pkl
+  clean X + C + S + 01N + 5F: experiments/conditioned_mlp_clean/comparisons/df_data_XRD__composition__spacegroup__1ppt_noise__5pct_FWHM.pkl
+  clean X + C + S + 1N + 5F: experiments/conditioned_mlp_clean/comparisons/df_data_XRD__composition__spacegroup__1pct_noise__5pct_FWHM.pkl
+  clean X + C + S + 5N + 5F: experiments/conditioned_mlp_clean/comparisons/df_data_XRD__composition__spacegroup__5pct_noise__5pct_FWHM.pkl
+  clean X + C + S + 01N + 10F: experiments/conditioned_mlp_clean/comparisons/df_data_XRD__composition__spacegroup__1ppt_noise__10pct_FWHM.pkl
+  clean X + C + S + 1N + 10F: experiments/conditioned_mlp_clean/comparisons/df_data_XRD__composition__spacegroup__1pct_noise__10pct_FWHM.pkl
+  clean X + C + S + 5N + 10F: experiments/conditioned_mlp_clean/comparisons/df_data_XRD__composition__spacegroup__5pct_noise__10pct_FWHM.pkl
+  
+  cl X: experiments/conditioned_cl_augmentation/comparisons/df_data_XRD__no_prompt__0pct_noise__5pct_FWHM.pkl
+  cl X + C: experiments/conditioned_cl_augmentation/comparisons/df_data_XRD__composition__0pct_noise__5pct_FWHM.pkl
+  cl X + C + S: experiments/conditioned_cl_augmentation/comparisons/df_data_XRD__composition__spacegroup__0pct_noise__5pct_FWHM.pkl
+  cl X + C + S + 01N + 5F: experiments/conditioned_cl_augmentation/comparisons/df_data_XRD__composition__spacegroup__1ppt_noise__5pct_FWHM.pkl
+  cl X + C + S + 1N + 5F: experiments/conditioned_cl_augmentation/comparisons/df_data_XRD__composition__spacegroup__1pct_noise__5pct_FWHM.pkl
+  cl X + C + S + 5N + 5F: experiments/conditioned_cl_augmentation/comparisons/df_data_XRD__composition__spacegroup__5pct_noise__5pct_FWHM.pkl
+  cl X + C + S + 01N + 10F: experiments/conditioned_cl_augmentation/comparisons/df_data_XRD__composition__spacegroup__1ppt_noise__10pct_FWHM.pkl
+  cl X + C + S + 1N + 10F: experiments/conditioned_cl_augmentation/comparisons/df_data_XRD__composition__spacegroup__1pct_noise__10pct_FWHM.pkl
+  cl X + C + S + 5N + 10F: experiments/conditioned_cl_augmentation/comparisons/df_data_XRD__composition__spacegroup__5pct_noise__10pct_FWHM.pkl

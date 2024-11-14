@@ -1,12 +1,18 @@
 output_folder: "test"
-debug_max: 10
+debug_max: 30
 use_deprecated_keys: false
-fingerprint_comparison: true
+fingerprint_comparison: false
 structural_diversity: false
-crystal_system_metric_comparison: true
+crystal_system_metric_comparison: false
+metrics_vs_seq_len: false
+validity_comparison: false
 
 use_saved_data: false
 
 eval_folder_dict:
-  test another: test_eval_files
-  test: test_eval_files
+  aug X: test_eval_files
+  aug X + C: test_eval_files
+
+pickle_dict:
+  aug X: test/aug_X.pkl
+  aug X + C: test/aug_X__C.pkl
