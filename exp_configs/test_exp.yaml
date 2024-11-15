@@ -1,18 +1,17 @@
 output_folder: "test"
-debug_max: 30
+debug_max: null
 use_deprecated_keys: false
-fingerprint_comparison: false
+fingerprint_comparison: true
 structural_diversity: false
 crystal_system_metric_comparison: false
 metrics_vs_seq_len: false
-validity_comparison: false
+validity_comparison: true
 
 use_saved_data: false
 
 eval_folder_dict:
-  aug X: test_eval_files
-  aug X + C: test_eval_files
+  aug X: test_new_eval_result_dict/eval_files/cond_test/
 
-pickle_dict:
-  aug X: test/aug_X.pkl
-  aug X + C: test/aug_X__C.pkl
+# pickle_dict:
+#   aug X: test/aug_X.pkl
+#   aug X + C: test/aug_X__C.pkl

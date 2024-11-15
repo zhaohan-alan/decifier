@@ -124,7 +124,8 @@ def process_file(file_path):
         soap_large_sample = row['descriptors']['soap_large_sample']
         soap_large_gen = row['descriptors']['soap_large_gen']
 
-        seq_len = row['seq_len']
+        seq_len_sample = row['seq_len_sample']
+        seq_len_gen = row['seq_len_gen']
 
         # Calculate metrics
         rwp_dirty_value = rwp(xrd_dirty_from_sample, xrd_clean_from_gen)
@@ -168,7 +169,8 @@ def process_file(file_path):
             'spacegroup_num_gen': spacegroup_num_gen,
             'cif_sample': cif_sample,
             'cif_gen': cif_gen,
-            'seq_len': seq_len,
+            'seq_len_sample': seq_len_sample,
+            'seq_len_gen': seq_len_gen,
             'formula_validity': formula_validity,
             'spacegroup_validity': spacegroup_validity,
             'bond_length_validity': bond_length_validity,
@@ -340,7 +342,7 @@ def fingerprint_comparison(
         ('rwp_clean', r"$R_{wp}$"),
         ('s12_clean', r"$S_{12}$"),
         ('hd_clean', "HD"),
-        ('ws_clean', "WS"),
+        ('ws_clean', "WD"),
         ('r2_clean', r"$R^{2}$"),
         ('soap_large_distance', "Structural similarity"),
     ]

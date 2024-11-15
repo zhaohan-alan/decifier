@@ -157,7 +157,7 @@ def safe_extract(extract_function, *args):
     except Exception:
         return None
 
-def get_statistics(cif_string):
+def get_cif_statistics(cif_string, eval_dict):
     """
     Extracts statistical properties and validity checks for a given CIF (Crystallographic Information File) string.
 
@@ -167,6 +167,7 @@ def get_statistics(cif_string):
 
     Args:
         cif_string (str): The CIF data string representing the crystal structure.
+        eval_results (dict)
 
     Returns:
         dict: A dictionary containing the following keys:
@@ -236,6 +237,9 @@ def get_statistics(cif_string):
     stat_dict['spacegroup'] = safe_extract(extract_space_group_symbol, cif_string)
     stat_dict['species'] = safe_extract(extract_species, cif_string)
     stat_dict['composition'] = safe_extract(extract_composition, cif_string) # TODO returns dict, no good for parquet
+
+    if eval_dict is not None:
+        stat_dict.update(eval_dict)
     
     return stat_dict
 
@@ -348,7 +352,6 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
             - 'rep': Repetition number for multiple attempts.
             - 'xrd_parameters': Parameters for XRD calculation.
             - 'xrd_cont_from_sample': XRD data from the sample for comparison.
-            - 'xrd_disc_from_sample': XRD data from the sample for comparison.
             - 'species': Atomic species involved in the structure.
             - 'dataset': Name of the dataset (optional, defaults to 'UnknownDataset').
             - 'model': Name of the model (optional, defaults to 'UnknownModel').
@@ -360,7 +363,9 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
     """
     
     # Initialize the tokenizer decoder function
-    decode = Tokenizer().decode
+    tokenizer = Tokenizer()
+    decode = tokenizer.decode
+    tokenize = tokenizer.tokenize_cif
 
     # Initialise soap descriptor for each worker
     soap_large = SOAP(
@@ -397,10 +402,25 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
         if task is None:
             break
 
+        eval_result = {
+            'index': task['index'],
+            'rep': task['rep'],
+            'dataset_name': task.get('dataset', 'UnknownDataset'),
+            'model_name': task.get('model', 'UnknownModel'),
+            'cif_sample': task.get('cif_sample', None),
+            'seq_len_sample': len(tokenize(task.get('cif_sample', None))),
+            'seq_len_gen': len(task['token_ids']),
+            'spacegroup_sample': task.get('spacegroup_sample', None),
+            'descriptors': {
+                'xrd_dirty_from_sample': task['xrd_dirty_from_sample'],
+            },
+            'status': 'fail',
+        }
+
         try:
             # Decode tokenized CIF structure into a string
             cif_string = decode(task['token_ids'])
-
+            
             # Replace symmetry loop with primitive cell ("P1")
             cif_string = replace_symmetry_loop_with_P1(cif_string)
 
@@ -410,67 +430,68 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
             # If the space group is not "P1", reinstate symmetry
             if spacegroup_symbol != "P 1":
                 cif_string = reinstate_symmetry_loop(cif_string, spacegroup_symbol)
+            
+            eval_result.update({
+                'cif_gen': cif_string,
+                'status': 'syntax',
+            })
 
-            # Check if the CIF structure is sensible (valid)
+            # Check if the CIF structure is sensible
             if is_sensible(cif_string):
+                eval_result.update({
+                    'status': 'sensible',
+                })
+
                 # Evaluate CIF validity and structure
-                eval_result = get_statistics(cif_string)
+                eval_result = get_cif_statistics(cif_string, eval_result)
+            
+                eval_result.update({
+                    'status': 'statistics',
+                })
 
                 # Update evaluation result with metadata and calculated descriptors
-                eval_result.update({
-                    'index': task['index'],
-                    'rep': task['rep'],
-                    'descriptors': {
-                        'xrd_clean_from_gen': disc_to_cont_xrd_from_cif(
-                            cif_string,
-                            structure_name = task['name'],
-                            wavelength = task['xrd_parameters']['wavelength'], # TODO make independent
-                            qmin = task['xrd_parameters']['qmin'],
-                            qmax = task['xrd_parameters']['qmax'],
-                            qstep = task['xrd_parameters']['qstep'],
-                            fwhm_range = (task['clean_fwhm'], task['clean_fwhm']),
-                            eta_range = (0.5, 0.5),
-                            noise_range = None,
-                            intensity_scale_range = None,
-                            mask_prob = None,
-                            debug = task['debug'],
-                        ),
-                        'xrd_clean_from_sample': disc_to_cont_xrd_from_cif(
-                            task['cif_sample'],
-                            structure_name = task['name'],
-                            wavelength = task['xrd_parameters']['wavelength'], # TODO make independent
-                            qmin = task['xrd_parameters']['qmin'],
-                            qmax = task['xrd_parameters']['qmax'],
-                            qstep = task['xrd_parameters']['qstep'],
-                            fwhm_range = (task['clean_fwhm'], task['clean_fwhm']),
-                            eta_range = (0.5, 0.5),
-                            noise_range = None,
-                            intensity_scale_range = None,
-                            mask_prob = None,
-                            debug = task['debug'],
-                        ),
-                        'xrd_dirty_from_sample': task['xrd_dirty_cont_from_sample'],
-                        'soap_small_gen': get_soap(
-                                   cif_name = task['name'],
-                                   cif_string = cif_string,
-                                   soap_generator = soap_small,
-                                   debug = task['debug']
-                        ),
-                        'soap_small_sample': get_soap(
-                                   cif_name = task['name'],
-                                   cif_string = task['cif_sample'],
-                                   soap_generator = soap_small,
-                                   debug = task['debug']
-                        ),
-                    },
-                    'dataset_name': task.get('dataset', 'UnknownDataset'),
-                    'model_name': task.get('model', 'UnknownModel'),
-                    'seq_len': len(task['token_ids']),
-                    'cif_sample': task.get('cif_sample', None),
-                    'spacegroup_sample': task.get('spacegroup_sample', None),
-                    'status': 'success',
+                eval_result['descriptors'].update({
+                    'xrd_clean_from_gen': disc_to_cont_xrd_from_cif(
+                        cif_string,
+                        structure_name = task['name'],
+                        wavelength = task['xrd_parameters']['wavelength'], # TODO make independent
+                        qmin = task['xrd_parameters']['qmin'],
+                        qmax = task['xrd_parameters']['qmax'],
+                        qstep = task['xrd_parameters']['qstep'],
+                        fwhm_range = (task['clean_fwhm'], task['clean_fwhm']),
+                        eta_range = (0.5, 0.5),
+                        noise_range = None,
+                        intensity_scale_range = None,
+                        mask_prob = None,
+                        debug = task['debug'],
+                    ),
+                    'xrd_clean_from_sample': disc_to_cont_xrd_from_cif(
+                        task['cif_sample'],
+                        structure_name = task['name'],
+                        wavelength = task['xrd_parameters']['wavelength'], # TODO make independent
+                        qmin = task['xrd_parameters']['qmin'],
+                        qmax = task['xrd_parameters']['qmax'],
+                        qstep = task['xrd_parameters']['qstep'],
+                        fwhm_range = (task['clean_fwhm'], task['clean_fwhm']),
+                        eta_range = (0.5, 0.5),
+                        noise_range = None,
+                        intensity_scale_range = None,
+                        mask_prob = None,
+                        debug = task['debug'],
+                    ),
+                    'soap_small_gen': get_soap(
+                               cif_name = task['name'],
+                               cif_string = cif_string,
+                               soap_generator = soap_small,
+                               debug = task['debug']
+                    ),
+                    'soap_small_sample': get_soap(
+                               cif_name = task['name'],
+                               cif_string = task['cif_sample'],
+                               soap_generator = soap_small,
+                               debug = task['debug']
+                    ),
                 })
-                
                 if not task['exclude_large_soap']:
                     eval_result['descriptors'].update({
                         'soap_large_gen': get_soap(
@@ -487,15 +508,14 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
                         ),
                     })
 
-                save_evaluation(eval_result, task['name'], task['rep'], eval_files_dir)
+                eval_result.update({'status': 'success'})
 
-            else:
-                # If the CIF is not sensible, mark the task as failed
-                save_evaluation({'status': 'fail', 'index': task['index'], 'rep': task['rep']}, task['name'], task['rep'], eval_files_dir)
+            save_evaluation(eval_result, task['name'], task['rep'], eval_files_dir)
 
         except Exception as e:
             # In case of error, save error information
-            save_evaluation({'status': 'error', 'error_msg': str(e), 'index': task['index'], 'rep': task['rep']}, task['name'], task['rep'], eval_files_dir)
+            eval_result.update({'status': 'error', 'error_msg': str(e)})
+            save_evaluation(eval_result, task['name'], task['rep'], eval_files_dir)
         finally:
             # Signal task completion
             done_queue.put(1)
@@ -622,13 +642,13 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
             prompt = extract_prompt(sample, model.device, add_composition=kwargs['add_composition'], add_spacegroup=kwargs['add_spacegroup']).unsqueeze(0)
 
         # Initialize varibales that might be unbounded
-        xrd_dirty_cont_from_sample = None
+        xrd_input = None
         cond_vec = None
         token_ids = None
         
         if prompt is not None:
             # Generate token sequences from the model's output
-            xrd_dirty_cont_from_sample = disc_to_cont_xrd(
+            xrd_input = disc_to_cont_xrd(
                 xrd_disc_q.unsqueeze(0), 
                 xrd_disc_iq.unsqueeze(0),
                 qmin = kwargs['xrd_parameters']['qmin'], # TODO make these independent of the metadata by using q in conditioning
@@ -637,7 +657,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
                 **augment_param_dict
             )
 
-            cond_vec = xrd_dirty_cont_from_sample['iq'].to(model.device)
+            cond_vec = xrd_input['iq'].to(model.device)
 
             if zero_cond: # TODO deprecate
                 cond_vec = torch.zeros_like(cond_vec).to(model.device)
@@ -648,8 +668,8 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
             token_ids = [sample[sample != padding_id].cpu().numpy()]
                 
 
-        xrd_sample_q = xrd_dirty_cont_from_sample['q'].squeeze(0).numpy() if xrd_dirty_cont_from_sample is not None else None
-        xrd_sample_iq = xrd_dirty_cont_from_sample['iq'].squeeze(0).numpy() if xrd_dirty_cont_from_sample is not None else None
+        xrd_sample_q = xrd_input['q'].squeeze(0).numpy() if xrd_input is not None else None
+        xrd_sample_iq = xrd_input['iq'].squeeze(0).numpy() if xrd_input is not None else None
 
         # Create tasks for each repetition
         for rep_num in range(kwargs['num_reps']):
@@ -659,8 +679,7 @@ def process_dataset(h5_test_path, model, input_queue, eval_files_dir, num_worker
                 'index': i,
                 'rep': rep_num,
                 'xrd_parameters': kwargs['xrd_parameters'],
-                'xrd_disc_from_sample': {'q': xrd_disc_q, 'iq': xrd_disc_iq},
-                'xrd_dirty_cont_from_sample': {'q': xrd_sample_q, 'iq': xrd_sample_iq},
+                'xrd_dirty_from_sample': {'q': xrd_sample_q, 'iq': xrd_sample_iq},
                 'species': kwargs['species'],
                 'dataset': kwargs['dataset_name'],
                 'model': kwargs['model_name'],
