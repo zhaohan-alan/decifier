@@ -2,7 +2,8 @@
 #SBATCH -p gpu --gres=gpu:titanrtx:1
 #SBATCH --time 1-00:00:00
 #SBATCH --job-name=exp_deCIFer
-#SBATCH --array 0-2%3
+# #SBATCH --array 0-2%3
+#SBATCH --array 0-1%2
 #SBATCH --cpus-per-task=3
 #SBATCH --mem-per-cpu=12G
 #SBATCH --output=logs/exp_uncond_%A_%a.out
@@ -24,9 +25,9 @@ EXTERNAL_ARGS=("$@")
 
 # Define specific argument sets for each array job
 ARGS_ARRAY=(
-  "--dataset-name noprompt_0pctnoise_5pctfwhm_5ktest"
-  "--dataset-name composition_0pctnoise_5pctfwhm_5ktest --add-composition"
-  "--dataset-name composition_spacegroup_0pctnoise_5pctfwhm_5ktest --add-composition --add-spacegroup"
+#  "--dataset-name noprompt"
+  "--dataset-name composition --add-composition"
+  "--dataset-name composition_spacegroup --add-composition --add-spacegroup"
 )
 
 ARRAY_ARGS=${ARGS_ARRAY[$SLURM_ARRAY_TASK_ID]}

@@ -1,19 +1,13 @@
 output_folder: experiments/conditioned_mlp_clean/comparisons
 debug_max: null
-use_deprecated_keys: false
-fingerprint_comparison: true
-structural_diversity: false
-crystal_system_metric_comparison: true
-
-use_saved_data: false
 
 eval_folder_dict:
-  XRD + no_prompt + 0pct noise + 5pct FWHM: experiments/conditioned_mlp_clean/eval_files/noprompt_0pctnoise_5pctfwhm
-  XRD + composition + 0pct noise + 5pct FWHM: experiments/conditioned_mlp_clean/eval_files/composition_0pctnoise_5pctfwhm
-  XRD + composition + spacegroup + 0pct noise + 5pct FWHM: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_0pctnoise_5pctfwhm
-  XRD + composition + spacegroup + 1ppt noise + 5pct FWHM: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_1pptnoise_5pctfwhm
-  XRD + composition + spacegroup + 1pct noise + 5pct FWHM: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_1pctnoise_5pctfwhm
-  XRD + composition + spacegroup + 5pct noise + 5pct FWHM: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_5pctnoise_5pctfwhm
-  XRD + composition + spacegroup + 1ppt noise + 10pct FWHM: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_1pptnoise_10pctfwhm
-  XRD + composition + spacegroup + 1pct noise + 10pct FWHM: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_1pctnoise_10pctfwhm
-  XRD + composition + spacegroup + 5pct noise + 10pct FWHM: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_5pctnoise_10pctfwhm
+  XRD noprompt 0pctnoise 5pctfwhm: experiments/conditioned_mlp_clean/eval_files/noprompt_0pctnoise_5pctfwhm
+  #XRD composition 0pctnoise 5pct FWHM: experiments/conditioned_mlp_clean/eval_files/composition_0pctnoise_5pctfwhm
+  XRD composition spacegroup 0pctnoise 5pctfwhm: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_0pctnoise_5pctfwhm
+  XRD composition spacegroup 1pptnoise 5pctfwhm: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_1pptnoise_5pctfwhm
+  XRD composition spacegroup 1pctnoise 5pctfwhm: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_1pctnoise_5pctfwhm
+  XRD composition spacegroup 5pctnoise 5pctfwhm: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_5pctnoise_5pctfwhm
+  XRD composition spacegroup 1pptnoise 10pctfwhm: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_1pptnoise_10pctfwhm
+  XRD composition spacegroup 1pctnoise 10pctfwhm: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_1pctnoise_10pctfwhm
+  XRD composition spacegroup 5pctnoise 10pctfwhm: experiments/conditioned_mlp_clean/eval_files/composition_spacegroup_5pctnoise_10pctfwhm

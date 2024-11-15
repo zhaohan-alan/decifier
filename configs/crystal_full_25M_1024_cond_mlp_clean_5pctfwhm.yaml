@@ -1,4 +1,4 @@
-out_dir: 'cond_mlp_aug_3_layer'
+out_dir: 'cond_mlp_clean_5pctfwhm'
 eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200
 eval_iters_val: 200
@@ -36,8 +36,15 @@ warmup_iters: 100
 early_stopping_patience: 50
 
 condition_with_mlp_emb: True
-cond_num_hidden_layers: 3
-
 condition_with_cl_emb: False
 boundary_masking: True
 
+fwhm_range_min: 0.05 
+fwhm_range_max: 0.05
+eta_range_min: 0.5
+eta_range_max: 0.5
+noise_range_min: 0.0
+noise_range_max: 0.0
+intensity_scale_range_min: 1.0
+intensity_scale_range_max: 1.0
+mask_prob: 0.0
