@@ -1,8 +1,9 @@
 #!/bin/bash
 #SBATCH -p gpu --gres=gpu:titanrtx:1
-#SBATCH --time 1-00:00:00
+#SBATCH --time 1-12:00:00
 #SBATCH --job-name=eval_deCIFer
 # #SBATCH --array 0-8%9
+# #SBATCH --array 0-2%3
 #SBATCH --array 0
 #SBATCH --cpus-per-task=3
 #SBATCH --mem-per-cpu=12G
@@ -25,16 +26,18 @@ EXTERNAL_ARGS=("$@")
 
 # Define specific argument sets for each array job
 ARGS_ARRAY=(
-#  "--dataset-name noprompt_0pctnoise_5pctfwhm"
   "--dataset-name composition_0pctnoise_5pctfwhm --add-composition"
-#  "--dataset-name composition_spacegroup_0pctnoise_5pctfwhm --add-composition --add-spacegroup"
-#  "--dataset-name composition_spacegroup_1pptnoise_5pctfwhm --add-composition --add-spacegroup --add-noise 0.001 --add-broadening 0.05"
-#  "--dataset-name composition_spacegroup_1pctnoise_5pctfwhm --add-composition --add-spacegroup --add-noise 0.01 --add-broadening 0.05"
-#  "--dataset-name composition_spacegroup_5pctnoise_5pctfwhm --add-composition --add-spacegroup --add-noise 0.05 --add-broadening 0.05"
-#  "--dataset-name composition_spacegroup_1pptnoise_10pctfwhm --add-composition --add-spacegroup --add-noise 0.001 --add-broadening 0.1"
-#  "--dataset-name composition_spacegroup_1pctnoise_10pctfwhm --add-composition --add-spacegroup --add-noise 0.01 --add-broadening 0.1"
-#  "--dataset-name composition_spacegroup_5pctnoise_10pctfwhm --add-composition --add-spacegroup --add-noise 0.05 --add-broadening 0.1"
 )
+#"--dataset-name composition_spacegroup_0pctnoise_5pctfwhm --add-composition --add-spacegroup"
+#"--dataset-name composition_spacegroup_1pptnoise_5pctfwhm --add-composition --add-spacegroup --add-noise 0.001 --add-broadening 0.05"
+
+#"--dataset-name noprompt_0pctnoise_5pctfwhm"
+
+#"--dataset-name composition_spacegroup_1pctnoise_5pctfwhm --add-composition --add-spacegroup --add-noise 0.01 --add-broadening 0.05"
+#"--dataset-name composition_spacegroup_5pctnoise_5pctfwhm --add-composition --add-spacegroup --add-noise 0.05 --add-broadening 0.05"
+#"--dataset-name composition_spacegroup_1pptnoise_10pctfwhm --add-composition --add-spacegroup --add-noise 0.001 --add-broadening 0.1"
+#"--dataset-name composition_spacegroup_1pctnoise_10pctfwhm --add-composition --add-spacegroup --add-noise 0.01 --add-broadening 0.1"
+#"--dataset-name composition_spacegroup_5pctnoise_10pctfwhm --add-composition --add-spacegroup --add-noise 0.05 --add-broadening 0.1"
 
 ARRAY_ARGS=${ARGS_ARRAY[$SLURM_ARRAY_TASK_ID]}
 
