@@ -31,6 +31,7 @@ from logging import handlers
 from decifer.tokenizer import Tokenizer
 from decifer.cl_model import CLEncoder
 from decifer.utility import (
+    disc_to_cont_xrd,
     replace_symmetry_loop_with_P1,
     remove_cif_header,
     remove_oxidation_loop,
@@ -406,8 +407,8 @@ def descriptor_worker(args):
             print(f"Error processing {cif_name}: {e}")
         logger = logging.getLogger()
         logger.exception(f"Exception in worker function calculating descriptors for CIF {cif_name}, with error:\n {e}\n\n")
-    
-def xrd_worker(args):
+
+def xrd_disc_worker(args):
 
     # Extract arguments
     from_path, task_dict, debug, to_dir = args
@@ -424,47 +425,64 @@ def xrd_worker(args):
 
         # Init calculator object and calculate XRD pattern
         xrd_calc = XRDCalculator(wavelength=task_dict['wavelength'])
-        xrd_pattern = xrd_calc.get_pattern(structure)
+        if task_dict['qmax'] >= ((4 * np.pi) / xrd_calc.wavelength) * np.sin(np.radians(180)):
+            two_theta_range = None
+        else:
+            tth_min = 2 * np.arcsin((task_dict['qmin'] * xrd_calc.wavelength) / (4 * np.pi))
+            tth_max = 2 * np.arcsin((task_dict['qmax'] * xrd_calc.wavelength) / (4 * np.pi))
+            two_theta_range = (tth_min, tth_max)
+        xrd_pattern = xrd_calc.get_pattern(structure, two_theta_range=two_theta_range)
 
         # Convert units to Q
         theta = np.radians(xrd_pattern.x / 2)
         q_disc = 4 * np.pi * np.sin(theta) / xrd_calc.wavelength # Q = 4 pi sin theta / lambda
         iq_disc = xrd_pattern.y / (np.max(xrd_pattern.y) + 1e-16)
 
-        # Define Q grid
-        q_cont = np.arange(task_dict['qmin'], task_dict['qmax'], task_dict['qstep'])
-
-        # Init itensity array
-        iq_cont = np.zeros_like(q_cont)
-
-        # Apply Gaussian broadening
-        for q_peak, iq_peak in zip(q_disc, xrd_pattern.y):
-            gaussian_peak = iq_peak * np.exp(-0.5 * ((q_cont - q_peak) / task_dict['fwhm']) ** 2)
-            iq_cont += gaussian_peak
-
-        # Normalize intensities
-        eps = 1e-16
-        iq_cont /= (np.max(iq_cont) + eps)
-
-        # Add noise based on SNR
-        if task_dict['snr'] < 100.:
-            noise = np.random.normal(0, np.max(iq_cont) / task_dict['snr'], size=iq_cont.shape)
-            iq_cont = iq_cont + noise
-
-        # Strictly positive singals (counts)
-        iq_cont[iq_cont < 0] = 0
-
-        # Save output to pkl.gz file
         output_dict = {
             'cif_name': cif_name,
             'xrd_disc': {
                 'q': q_disc,
                 'iq': iq_disc,
             },
-            'xrd_cont': {
-                'q': q_cont,
-                'iq': iq_cont,
-            },
+        }
+
+        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
+        safe_pkl_gz(output_dict, output_path)
+
+    except Exception as e:
+        if debug:
+            print(f"Error processing {cif_name}: {e}")
+        logger = logging.getLogger()
+        logger.exception(f"Exception in worker function with disc xrd calculation for CIF with name {cif_name}, with error:\n {e}\n\n")
+    
+def xrd_cont_worker(args):
+
+    # Extract arguments
+    from_path, task_dict, debug, to_dir = args
+
+    # Open pkl and extract
+    with gzip.open(from_path, "rb") as f:
+        data = pickle.load(f)
+    cif_name = data['cif_name']
+
+    try:
+        xrd_dict = disc_to_cont_xrd(
+            batch_q = task_dict['q_disc'].unsqueeze(0), 
+            batch_iq = task_dict['iq_disc'].unsqueeze(1),
+            qmin = task_dict['qmin'],
+            qmax = task_dict['qmax'],
+            qstep = task_dict['qstep'],
+            fwhm_range = task_dict['fwhm_range'],
+            eta_range = task_dict['eta_range'],
+            noise_range = task_dict['noise_range'],
+            intensity_scale_range = None,
+            mask_prob = None,
+        )
+
+        # Save output to pkl.gz file
+        output_dict = {
+            'cif_name': cif_name,
+            'xrd_cont': xrd_dict,
         }
         
         output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
@@ -474,7 +492,7 @@ def xrd_worker(args):
         if debug:
             print(f"Error processing {cif_name}: {e}")
         logger = logging.getLogger()
-        logger.exception(f"Exception in worker function with xrd calculation for CIF with name {cif_name}, with error:\n {e}\n\n")
+        logger.exception(f"Exception in worker function with cont xrd calculation for CIF with name {cif_name}, with error:\n {e}\n\n")
 
 def cl_emb_worker(args):
 
@@ -787,10 +805,15 @@ def serialize(root, workers, seed):
     if len(desc_paths) > 0:
         data_types.append({'dir': desc_dir, 'keys': ['soap', 'acsf']})
 
-    xrd_dir = os.path.join(root, "xrd")
-    xrd_paths = glob(os.path.join(xrd_dir, "*.pkl.gz"))
-    if len(xrd_paths) > 0:
-        data_types.append({'dir': xrd_dir, 'keys': ['xrd_disc', 'xrd_cont']})
+    xrd_disc_dir = os.path.join(root, "xrd_disc")
+    xrd_disc_paths = glob(os.path.join(xrd_disc_dir, "*.pkl.gz"))
+    if len(xrd_disc_paths) > 0:
+        data_types.append({'dir': xrd_disc_dir, 'keys': ['xrd_disc']})
+    
+    xrd_cont_dir = os.path.join(root, "xrd_cont")
+    xrd_cont_paths = glob(os.path.join(xrd_cont_dir, "*.pkl.gz"))
+    if len(xrd_cont_paths) > 0:
+        data_types.append({'dir': xrd_cont_dir, 'keys': ['xrd_cont']})
     
     cl_dir = os.path.join(root, "cl_embeddings")
     cl_paths = glob(os.path.join(cl_dir, "*.pkl.gz"))
@@ -853,19 +876,20 @@ if __name__ == "__main__":
 
     parser.add_argument("--preprocess", help="preprocess files", action="store_true")
     parser.add_argument("--desc", help="calculate descriptors", action="store_true")  # Placeholder for future implementation
-    parser.add_argument("--xrd", help="calculate XRD", action="store_true")  # Placeholder for future implementation
-    parser.add_argument("--tokenize_cif", help="tokenize CIFs", action="store_true")  # Placeholder for future implementation
-    parser.add_argument("--tokenize_xrd", help="tokenize XRDs", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--xrd-disc", help="calculate discrete XRD", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--xrd-cont", help="calculate continuous XRD", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--tokenize-cif", help="tokenize CIFs", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--tokenize-xrd", help="tokenize XRDs", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--serialize", help="serialize data by hdf5 convertion", action="store_true")  # Placeholder for future implementation
 
     parser.add_argument("--debug-max", help="Debug-feature: max number of files to process", type=int, default=0)
     parser.add_argument("--debug", help="Debug-feature: whether to print debug messages", action="store_true")
     parser.add_argument("--workers", help="Number of workers for each processing step", type=int, default=0)
-    parser.add_argument("--raw_from_gzip", help="Whether raw CIFs come packages in gzip pkl", action="store_true")
+    parser.add_argument("--raw-from-gzip", help="Whether raw CIFs come packages in gzip pkl", action="store_true")
     parser.add_argument("--save-species-to-metadata", help="Extraordinary save of species to metadata", action="store_true")
 
-    parser.add_argument("--cl_emb", help="Generate contrastive learning embeddings", action="store_true")
-    parser.add_argument("--model_path", type=str, help="Path to the trained model checkpoint for generating embeddings")
+    parser.add_argument("--cl-emb", help="Generate contrastive learning embeddings", action="store_true")
+    parser.add_argument("--model-path", type=str, help="Path to the trained model checkpoint for generating embeddings")
 
     args = parser.parse_args()
 
@@ -954,22 +978,41 @@ if __name__ == "__main__":
             workers = args.workers,
         )
 
-    if args.xrd:
+    if args.xrd_disc:
         xrd_dict = {
             'wavelength': 'CuKa',
             'qmin': 0.0,
             'qmax': 10.0,
             'qstep': 0.01,
-            'fwhm': 0.05,
-            'snr': 100.0,
         }
         run_subtasks(
             root = args.data_dir, 
-            worker_function = xrd_worker,
+            worker_function = xrd_disc_worker,
             get_from = "preprocessed",
-            save_to = "xrd",
+            save_to = "xrd_disc",
             task_kwargs_dict = xrd_dict,
-            announcement = "XRD CALCULATIONS",
+            announcement = "XRD DISC CALCULATIONS",
+            debug = True,
+            workers = args.workers,
+        )
+    
+    if args.xrd_cont:
+        xrd_dict = {
+            'wavelength': 'CuKa',
+            'qmin': 0.0,
+            'qmax': 10.0,
+            'qstep': 0.01,
+            'fwhm_range': (0.05, 0.05),
+            'eta_range': (0.5, 0.5),
+            'noise_range': (0.0, 0.0),
+        }
+        run_subtasks(
+            root = args.data_dir, 
+            worker_function = xrd_cont_worker,
+            get_from = "xrd_disc",
+            save_to = "xrd_cont",
+            task_kwargs_dict = xrd_dict,
+            announcement = "XRD CONT CALCULATIONS",
             debug = True,
             workers = args.workers,
         )

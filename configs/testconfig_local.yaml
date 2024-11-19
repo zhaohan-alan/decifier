@@ -1,4 +1,4 @@
-out_dir: 'testing_deeper_mlp'
+out_dir: 'testing_new_dataset'
 eval_interval: 10  # how often to evaluate against the validation set
 eval_iters_train: 10
 eval_iters_val: 10
@@ -36,8 +36,5 @@ warmup_iters: 10
 early_stopping_patience: 5
 
 condition_with_mlp_emb: True
-cond_hidden_size: 512
-cond_num_hidden_layers: 1
-
 condition_with_cl_emb: False
 boundary_masking: True

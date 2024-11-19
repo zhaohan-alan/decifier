@@ -174,9 +174,9 @@ if __name__ == "__main__":
 
     # Augmentation kwargs
     augmentation_kwargs = {
-        'qmin': metadata["xrd"]["qmin"],
-        'qmax': metadata["xrd"]["qmax"],
-        'qstep': metadata["xrd"]["qstep"],
+        'qmin': metadata["xrd_disc"]["qmin"],
+        'qmax': metadata["xrd_disc"]["qmax"],
+        'qstep': metadata["xrd_disc"]["qstep"],
         'fwhm_range': (C.fwhm_range_min, C.fwhm_range_max),
         'eta_range': (C.eta_range_min, C.eta_range_max),
         'noise_range': (C.noise_range_min, C.noise_range_max),
