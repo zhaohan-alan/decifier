@@ -84,7 +84,7 @@ def process_file(file_path):
         with gzip.open(file_path, 'rb') as f:
             row = pickle.load(f)
 
-        if row['status'] != 'success':
+        if 'success' not in row['status']:# != 'success':
             return None
 
         # Extract Validity
@@ -95,8 +95,6 @@ def process_file(file_path):
 
         # Full validity check
         valid = all([formula_validity, bond_length_validity, spacegroup_validity, site_multiplicity_validity])
-        #if not valid:
-        #    return None
 
         # Extract CIFs and descriptors
         cif_sample = row['cif_sample']
@@ -290,6 +288,7 @@ def plot_violin_box(
     cut = 2,
     medians=None,
     ylim = None,
+    vlines = None,
 ):
     sns.violinplot(data=pd.DataFrame(data).T, cut=cut, ax=ax)
     sns.boxplot(data=pd.DataFrame(data).T, whis=1.5, fliersize=2, linewidth=1.5, boxprops=dict(alpha=0.2), ax=ax)
@@ -298,6 +297,10 @@ def plot_violin_box(
             med_value = np.median(medians[label])
             text = ax.text(i, med_value + 0.01, f'{med_value:.2f}', ha='center', va='bottom', fontsize=10, color='black')
             text.set_path_effects([path_effects.Stroke(linewidth=3, foreground='white'), path_effects.Normal()])
+
+    if vlines is not None:
+        for x in vlines:
+            ax.axvline(x=x+0.5, ls='--', lw=1)
 
     ax.set_ylabel(ylabel)
     ax.set_title(title)
@@ -336,15 +339,16 @@ def fingerprint_comparison(
     data_dict,
     labels,
     output_folder,
+    vlines,
 ) -> None:
 
     metrics = [
         ('rwp_clean', r"$R_{wp}$"),
         ('s12_clean', r"$S_{12}$"),
-        ('hd_clean', "HD"),
+        # ('hd_clean', "HD"),
         ('ws_clean', "WD"),
-        ('r2_clean', r"$R^{2}$"),
-        ('soap_large_distance', "Structural similarity"),
+        # ('r2_clean', r"$R^{2}$"),
+        # ('soap_large_distance', "Structural similarity"),
     ]
 
     # Now collect data across labels for plotting
@@ -358,7 +362,7 @@ def fingerprint_comparison(
             medians[metric_key][label] = data[f'{metric_key}']
 
     # Now plot using the collected data
-    fig, axs = plt.subplots(len(metrics),1,figsize=(5, 10), sharex=True)
+    fig, axs = plt.subplots(len(metrics),1,figsize=(5, 5), sharex=True)
     for i, (metric_key, ylabel) in enumerate(metrics):
 
         ax = axs[i]
@@ -370,8 +374,8 @@ def fingerprint_comparison(
             print(f"Skipping {metric_key} due to empty data")
             continue
         
-        plot_violin_box(structured_data, labels, ylabel=ylabel, title="Fingerprints" if i == 0 else "", ax=ax,
-                        medians=medians[metric_key])
+        plot_violin_box(structured_data, labels, ylabel=ylabel, title="" if i == 0 else "", ax=ax,
+                        medians=medians[metric_key], vlines=vlines)
 
         # ax = axs[i]
         # plot_violin_box(data_list[metric_key], labels, ylabel=ylabel, title="Fingerprints" if i == 0 else "", ax=ax,
@@ -433,6 +437,7 @@ def crystal_system_metric_comparison(
         mean_dfs = []
         for label in labels:
             df_dict = df_data[label].copy()
+            #print(df_dict)
             # Convert df_dict to DataFrame
             if isinstance(df_dict, pd.DataFrame):
                 df = df_dict.copy()
@@ -441,9 +446,9 @@ def crystal_system_metric_comparison(
                 df = pd.DataFrame.from_dict(df_dict)
             else:
                 raise ValueError(f"df_data[{label}] is not a DataFrame or dict")
-            df = df.dropna(subset=['spacegroup_num'])
+            df = df.dropna(subset=['spacegroup_num_sample'])
             # Map spacegroup numbers to crystal systems
-            df['crystal_system'] = df['spacegroup_num'].apply(get_crystal_system)
+            df['crystal_system'] = df['spacegroup_num_sample'].apply(get_crystal_system)
             grouped = df.groupby('crystal_system')
             mean_values = grouped[metric_key].mean().reset_index()
             mean_values['Dataset'] = label
@@ -474,9 +479,9 @@ def crystal_system_metric_comparison(
         median_dfs = []
         for label in labels:
             df = df_data[label].copy()
-            df = df.dropna(subset=['spacegroup_num'])
+            df = df.dropna(subset=['spacegroup_num_sample'])
             # Map spacegroup numbers to crystal systems
-            df['crystal_system'] = df['spacegroup_num'].apply(get_crystal_system)
+            df['crystal_system'] = df['spacegroup_num_sample'].apply(get_crystal_system)
             grouped = df.groupby('crystal_system')
             median_values = grouped[metric_key].median().reset_index()
             median_values['Dataset'] = label
@@ -570,14 +575,25 @@ def extract_validity_stats(df):
         'formula_validity',
         'spacegroup_validity',
         'bond_length_validity',
-        'site_multiplicity_validity'
+        'site_multiplicity_validity',
+        'validity',
     ]
     
     # Ensure the columns are treated as boolean
     df[validity_columns] = df[validity_columns].astype(bool)
     
-    # Calculate the percentage of valid entries for each metric
-    validity_stats = df[validity_columns].mean() * 100
+    # # Calculate the percentage of valid entries for each metric
+    # validity_stats = df[validity_columns].mean() * 100
+
+    # Calculate the percentage of valid entries for each metric (mean and std)
+    validity_stats_mean = df[validity_columns].mean() * 100
+    validity_stats_std = df[validity_columns].std() * 100
+    
+    # Combine mean and standard deviation into a single DataFrame
+    validity_stats = pd.DataFrame({
+        'mean (%)': validity_stats_mean,
+        'std (%)': validity_stats_std
+    })
 
     return validity_stats
 
@@ -623,76 +639,314 @@ def validity_comparison(
     df_data,
     labels,
     output_folder,
-    names = None,
+    names=None,
 ):
     results = []
     for label in labels:
+        # Extract stats and add the dataset label
         validity_stats = extract_validity_stats(df_data[label])
         validity_stats['Dataset'] = escape_underscores(label)
+        validity_stats.reset_index(inplace=True)  # Convert the index into a column
         results.append(validity_stats)
 
     # Combine all results into a DataFrame
-    results_df = pd.DataFrame(results)
-    results_df = results_df[[
-        'Dataset',
-        'formula_validity',
-        'spacegroup_validity',
-        'bond_length_validity',
-        'site_multiplicity_validity'
-    ]] 
-    
-    max_values = results_df[[
-        'formula_validity',
-        'spacegroup_validity',
-        'bond_length_validity',
-        'site_multiplicity_validity'
-    ]].max() 
-    
-    # Create LaTeX-like string to display
+    results_df = pd.concat(results).reset_index(drop=True)
+
+    # Pivot the DataFrame to get columns for each validity metric
+    results_df = results_df.pivot(index='Dataset', columns='index', values=['mean (%)', 'std (%)'])
+
+    # Debug: Print columns before renaming
+    print("Columns before renaming:", results_df.columns.tolist())
+
+    # Adjust column names to remove extra parentheses
+    results_df.columns = [f"{col[1]} ({col[0].replace(' (%)', ' %')})" for col in results_df.columns]
+
+    # Debug: Print columns after renaming
+    print("Columns after renaming:", results_df.columns.tolist())
+
+    # Calculate max values for each mean column
+    mean_columns = [col for col in results_df.columns if '(mean %)' in col]
+    max_values = results_df[mean_columns].max()
+
+    # Create LaTeX table string
     table_str = r"""
-    \begin{tabular}{lcccc}
-    \midrule
-    \text{Dataset} & \text{Formula Validity (\%)}$\;\uparrow$ & \text{Spacegroup Validity (\%)}$\;\uparrow$ & \text{Bond Length Validity (\%)}$\;\uparrow$ & \text{Site Multiplicity Validity (\%)}$\;\uparrow$ \\
-    \midrule
-    """
+\begin{tabular}{lccccc}
+\midrule
+\text{Dataset} & \text{Formula Validity (\%)}$\;\uparrow$ & \text{Spacegroup Validity (\%)}$\;\uparrow$ & \text{Bond Length Validity (\%)}$\;\uparrow$ & \text{Site Multiplicity Validity (\%)}$\;\uparrow$ & \text{Overall Validity (\%)}$\;\uparrow$ \\
+\midrule
+"""
 
-    # Add rows from DataFrame to the LaTeX string, bold the maximum values
-    for idx, row in results_df.iterrows():
+    # Add rows from DataFrame to the LaTeX string
+    for idx, row in results_df.reset_index().iterrows():
         if names is not None and len(names) > idx:
-            row['Dataset'] = replace_underscores(names[idx])
+            dataset_name = replace_underscores(names[idx])
+        else:
+            dataset_name = row['Dataset']
 
-        table_str += f"\\text{{{row['Dataset']}}} & "
+        table_str += f"\\text{{{dataset_name}}} & "
 
         # Formula Validity
-        if row['formula_validity'] == max_values['formula_validity']:
-            table_str += f"\\textbf{{{row['formula_validity']:.2f}}} & "
+        col_mean = 'formula_validity (mean %)'
+        col_std = 'formula_validity (std %)'
+        if col_mean in row and col_std in row:
+            if row[col_mean] == max_values[col_mean]:
+                table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} & "
+            else:
+                table_str += f"{row[col_mean]:.2f} ± {row[col_std]:.2f} & "
         else:
-            table_str += f"{row['formula_validity']:.2f} & "
-        
+            table_str += "N/A & "
+
         # Spacegroup Validity
-        if row['spacegroup_validity'] == max_values['spacegroup_validity']:
-            table_str += f"\\textbf{{{row['spacegroup_validity']:.2f}}} & "
+        col_mean = 'spacegroup_validity (mean %)'
+        col_std = 'spacegroup_validity (std %)'
+        if col_mean in row and col_std in row:
+            if row[col_mean] == max_values[col_mean]:
+                table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} & "
+            else:
+                table_str += f"{row[col_mean]:.2f} ± {row[col_std]:.2f} & "
         else:
-            table_str += f"{row['spacegroup_validity']:.2f} & "
+            table_str += "N/A & "
 
         # Bond Length Validity
-        if row['bond_length_validity'] == max_values['bond_length_validity']:
-            table_str += f"\\textbf{{{row['bond_length_validity']:.2f}}} & "
+        col_mean = 'bond_length_validity (mean %)'
+        col_std = 'bond_length_validity (std %)'
+        if col_mean in row and col_std in row:
+            if row[col_mean] == max_values[col_mean]:
+                table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} & "
+            else:
+                table_str += f"{row[col_mean]:.2f} ± {row[col_std]:.2f} & "
         else:
-            table_str += f"{row['bond_length_validity']:.2f} & "
+            table_str += "N/A & "
 
         # Site Multiplicity Validity
-        if row['site_multiplicity_validity'] == max_values['site_multiplicity_validity']:
-            table_str += f"\\textbf{{{row['site_multiplicity_validity']:.2f}}} \\\\\n"
+        col_mean = 'site_multiplicity_validity (mean %)'
+        col_std = 'site_multiplicity_validity (std %)'
+        if col_mean in row and col_std in row:
+            if row[col_mean] == max_values[col_mean]:
+                table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} & "
+            else:
+                table_str += f"{row[col_mean]:.2f} ± {row[col_std]:.2f} & "
         else:
-            table_str += f"{row['site_multiplicity_validity']:.2f} \\\\\n"
+            table_str += "N/A & "
+
+        # Overall Validity
+        col_mean = 'validity (mean %)'
+        col_std = 'validity (std %)'
+        if col_mean in row and col_std in row:
+            if row[col_mean] == max_values[col_mean]:
+                table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} \\\\\n"
+            else:
+                table_str += f"{row[col_mean]:.2f} ± {row[col_std]:.2f} \\\\\n"
+        else:
+            table_str += "N/A \\\\\n"
 
     # Close the table
     table_str += r"\bottomrule" + "\n"
     table_str += r"\end{tabular}"
 
+    # Generate LaTeX table as an image
     latex_to_png(table_str, output_filename=os.path.join(output_folder, "validity.png"))
+
+def extract_metrics_stats(df):
+    metrics_columns = [
+        'rwp_clean',
+        's12_clean',
+        'hd_clean',
+        'ws_clean',
+        'r2_clean',
+        'soap_large_distance',
+    ]
+
+    # Ensure the columns are numeric
+    df_metrics = df[metrics_columns].apply(pd.to_numeric, errors='coerce')
     
+    # Calculate the mean and standard deviation for each metric
+    metrics_mean = df_metrics.mean()
+    metrics_std = df_metrics.std()
+    
+    # Combine mean and standard deviation into a single DataFrame
+    metrics_stats = pd.DataFrame({
+        'mean': metrics_mean,
+        'std': metrics_std
+    })
+    metrics_stats['Metric'] = metrics_stats.index  # Add the metric names as a column
+    
+    return metrics_stats.reset_index(drop=True)
+
+def metrics_comparison(
+    df_data,
+    labels,
+    output_folder,
+    names=None,
+):
+    results = []
+    for idx, label in enumerate(labels):
+        # Extract stats and add the dataset label
+        metrics_stats = extract_metrics_stats(df_data[label])
+        dataset_name = escape_underscores(label)
+        if names is not None and len(names) > idx:
+            dataset_name = escape_underscores(names[idx])
+        metrics_stats['Dataset'] = dataset_name
+        results.append(metrics_stats)
+    
+    # Combine all results into a single DataFrame
+    results_df = pd.concat(results)
+    
+    # Pivot the DataFrame to get datasets as rows and metrics as columns
+    pivot_df = results_df.pivot(index='Dataset', columns='Metric', values=['mean', 'std'])
+    
+    # Flatten MultiIndex columns
+    pivot_df.columns = [f"{metric} ({stat})" for stat, metric in pivot_df.columns]
+    
+    # Define metrics and their display names
+    metrics_info = {
+        'rwp_clean': {'display_name': r"$R_{wp}$", 'better': 'lower'},
+        's12_clean': {'display_name': r"$S_{12}$", 'better': 'higher'},
+        'hd_clean': {'display_name': "HD", 'better': 'lower'},
+        'ws_clean': {'display_name': "WD", 'better': 'lower'},
+        'r2_clean': {'display_name': r"$R^{2}$", 'better': 'higher'},
+        'soap_large_distance': {'display_name': "SOAP Distance", 'better': 'higher'},
+    }
+    
+    # Prepare the LaTeX table header
+    table_str = r"""
+\begin{tabular}{l""" + "c" * len(metrics_info) + r"""}
+\toprule
+\textbf{Dataset}"""
+    for metric_key in metrics_info:
+        table_str += f" & \\textbf{{{metrics_info[metric_key]['display_name']}}}"
+    table_str += r""" \\
+\midrule
+"""
+
+    # Determine the best values for each metric
+    best_values = {}
+    for metric_key, info in metrics_info.items():
+        col_mean = f"{metric_key} (mean)"
+        if info['better'] == 'higher':
+            best_values[metric_key] = pivot_df[col_mean].max()
+        else:
+            best_values[metric_key] = pivot_df[col_mean].min()
+    
+    # Add rows to the LaTeX table
+    for dataset_name, row in pivot_df.iterrows():
+        table_str += f"\\text{{{dataset_name}}}"
+        for metric_key, info in metrics_info.items():
+            col_mean = f"{metric_key} (mean)"
+            col_std = f"{metric_key} (std)"
+            mean_value = row.get(col_mean, np.nan)
+            std_value = row.get(col_std, np.nan)
+            if pd.notna(mean_value) and pd.notna(std_value):
+                is_best = False
+                if info['better'] == 'higher' and mean_value == best_values[metric_key]:
+                    is_best = True
+                elif info['better'] == 'lower' and mean_value == best_values[metric_key]:
+                    is_best = True
+                value_str = f"{mean_value:.2f} $\\pm$ {std_value:.2f}"
+                if is_best:
+                    value_str = f"\\textbf{{{value_str}}}"
+                table_str += f" & {value_str}"
+            else:
+                table_str += " & N/A"
+        table_str += r" \\" + "\n"
+
+    # Close the table
+    table_str += r"""\bottomrule
+\end{tabular}
+"""
+
+    # Generate LaTeX table as an image
+    output_filename = os.path.join(output_folder, "metrics_comparison.png")
+    latex_to_png(table_str, output_filename=output_filename)
+    print(f"LaTeX table saved as image: {output_filename}")
+
+def metrics_comparison(
+    df_data,
+    labels,
+    output_folder,
+    names=None,
+):
+    results = []
+    for idx, label in enumerate(labels):
+        # Extract stats and add the dataset label
+        metrics_stats = extract_metrics_stats(df_data[label])
+        dataset_name = escape_underscores(label)
+        if names is not None and len(names) > idx:
+            dataset_name = escape_underscores(names[idx])
+        metrics_stats['Dataset'] = dataset_name
+        results.append(metrics_stats)
+    
+    # Combine all results into a single DataFrame
+    results_df = pd.concat(results)
+    
+    # Pivot the DataFrame to get datasets as rows and metrics as columns
+    pivot_df = results_df.pivot(index='Dataset', columns='Metric', values=['mean', 'std'])
+    
+    # Flatten MultiIndex columns
+    pivot_df.columns = [f"{metric} ({stat})" for stat, metric in pivot_df.columns]
+    
+    # Define metrics and their display names
+    metrics_info = {
+        'rwp_clean': {'display_name': r"$R_{wp}$", 'better': 'lower'},
+        's12_clean': {'display_name': r"$S_{12}$", 'better': 'higher'},
+        'hd_clean': {'display_name': "HD", 'better': 'lower'},
+        'ws_clean': {'display_name': "WD", 'better': 'lower'},
+        'r2_clean': {'display_name': r"$R^{2}$", 'better': 'higher'},
+        'soap_large_distance': {'display_name': "SOAP Distance", 'better': 'higher'},
+    }
+    
+    # Prepare the LaTeX table header
+    table_str = r"""
+\begin{tabular}{l""" + "c" * len(metrics_info) + r"""}
+\toprule
+\textbf{Dataset}"""
+    for metric_key in metrics_info:
+        table_str += f" & \\textbf{{{metrics_info[metric_key]['display_name']}}}"
+    table_str += r""" \\
+\midrule
+"""
+
+    # Determine the best values for each metric
+    best_values = {}
+    for metric_key, info in metrics_info.items():
+        col_mean = f"{metric_key} (mean)"
+        if info['better'] == 'higher':
+            best_values[metric_key] = pivot_df[col_mean].max()
+        else:
+            best_values[metric_key] = pivot_df[col_mean].min()
+    
+    # Add rows to the LaTeX table
+    for dataset_name, row in pivot_df.iterrows():
+        table_str += f"\\text{{{dataset_name}}}"
+        for metric_key, info in metrics_info.items():
+            col_mean = f"{metric_key} (mean)"
+            col_std = f"{metric_key} (std)"
+            mean_value = row.get(col_mean, np.nan)
+            std_value = row.get(col_std, np.nan)
+            if pd.notna(mean_value) and pd.notna(std_value):
+                is_best = False
+                if info['better'] == 'higher' and mean_value == best_values[metric_key]:
+                    is_best = True
+                elif info['better'] == 'lower' and mean_value == best_values[metric_key]:
+                    is_best = True
+                value_str = f"{mean_value:.2f} $\\pm$ {std_value:.2f}"
+                if is_best:
+                    value_str = f"\\textbf{{{value_str}}}"
+                table_str += f" & {value_str}"
+            else:
+                table_str += " & N/A"
+        table_str += r" \\" + "\n"
+
+    # Close the table
+    table_str += r"""\bottomrule
+\end{tabular}
+"""
+
+    # Generate LaTeX table as an image
+    output_filename = os.path.join(output_folder, "metrics_comparison.png")
+    latex_to_png(table_str, output_filename=output_filename)
+    print(f"LaTeX table saved as image: {output_filename}")
+
 
 if __name__ == "__main__":
 
@@ -730,9 +984,12 @@ if __name__ == "__main__":
 
     if yaml_dictconfig.get('validity_comparison', False):
         validity_comparison(df_data, labels, yaml_dictconfig.output_folder)
+
+    if yaml_dictconfig.get('metrics_comparison', False):
+        metrics_comparison(df_data, labels, yaml_dictconfig.output_folder)
     
     if yaml_dictconfig.get('fingerprint_comparison', False):
-        fingerprint_comparison(df_data, labels, yaml_dictconfig.output_folder)
+        fingerprint_comparison(df_data, labels, yaml_dictconfig.output_folder, yaml_dictconfig.vlines)
 
     if yaml_dictconfig.get('metrics_vs_seq_len', False):
         plot_metrics_vs_cif_length_histogram(df_data, labels, yaml_dictconfig.output_folder)

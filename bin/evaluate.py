@@ -398,9 +398,13 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
         # Fetch task from the input queue
         task = input_queue.get()
 
+        status = []
+
         # If a `None` task is received, terminate the worker
         if task is None:
             break
+
+        status.append('task')
 
         eval_result = {
             'index': task['index'],
@@ -414,7 +418,7 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
             'descriptors': {
                 'xrd_dirty_from_sample': task['xrd_dirty_from_sample'],
             },
-            'status': 'fail',
+            'status': status,
         }
 
         try:
@@ -431,22 +435,26 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
             if spacegroup_symbol != "P 1":
                 cif_string = reinstate_symmetry_loop(cif_string, spacegroup_symbol)
             
+            status.append('syntax')
             eval_result.update({
                 'cif_gen': cif_string,
-                'status': 'syntax',
+                'status': status,
             })
 
             # Check if the CIF structure is sensible
             if is_sensible(cif_string):
+
+                status.append('sensible')
                 eval_result.update({
-                    'status': 'sensible',
+                    'status': status,
                 })
 
                 # Evaluate CIF validity and structure
                 eval_result = get_cif_statistics(cif_string, eval_result)
             
+                status.append('statistics')
                 eval_result.update({
-                    'status': 'statistics',
+                    'status': status,
                 })
 
                 # Update evaluation result with metadata and calculated descriptors
@@ -508,13 +516,15 @@ def worker(input_queue, eval_files_dir, soap_params, done_queue):
                         ),
                     })
 
-                eval_result.update({'status': 'success'})
+                status.append('success')
+                eval_result.update({'status': status})
 
             save_evaluation(eval_result, task['name'], task['rep'], eval_files_dir)
 
         except Exception as e:
             # In case of error, save error information
-            eval_result.update({'status': 'error', 'error_msg': str(e)})
+            status.append('error')
+            eval_result.update({'status': status, 'error_msg': str(e)})
             save_evaluation(eval_result, task['name'], task['rep'], eval_files_dir)
         finally:
             # Signal task completion

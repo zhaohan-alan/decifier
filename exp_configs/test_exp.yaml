@@ -1,4 +1,4 @@
-output_folder: "test"
+output_folder: "experiments/conditioned_mlp_augmentation_large/comparisons"
 debug_max: null
 use_deprecated_keys: false
 fingerprint_comparison: true
@@ -10,7 +10,7 @@ validity_comparison: true
 use_saved_data: false
 
 eval_folder_dict:
-  aug X: test_new_eval_result_dict/eval_files/cond_test/
+  XRD_composition_0pctnoise_5pctfwhm: experiments/conditioned_mlp_augmentation_large/eval_files/composition_0pctnoise_5pctfwhm
 
 # pickle_dict:
 #   aug X: test/aug_X.pkl
