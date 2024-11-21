@@ -638,7 +638,11 @@ def save_h5(h5_path, cif_names, data_types):
 
         for idx, name in enumerate(tqdm(cif_names, desc=f'Serializing {h5_path}')):
             # Load data for all data types
-            data_dict = load_data_from_data_types_list(name, data_types)
+            try:
+                data_dict = load_data_from_data_types_list(name, data_types)
+            except:
+                print(f"Error in loading: {name}")
+                continue
 
             # Initialise datasets if processing the first file
             if idx == 0:
@@ -779,8 +783,8 @@ def serialize(root, workers, seed):
     strat_keys = [item[1] for item in results]
     
     # Create data splits
-    train_size = int(0.8 * dataset_size)
-    val_size = int(0.1 * dataset_size)
+    train_size = int(0.9 * dataset_size)
+    val_size = int(0.075 * dataset_size)
     test_size = dataset_size - train_size - val_size
 
     print("Train size:", train_size)
@@ -809,7 +813,7 @@ def serialize(root, workers, seed):
     xrd_disc_paths = glob(os.path.join(xrd_disc_dir, "*.pkl.gz"))
     if len(xrd_disc_paths) > 0:
         data_types.append({'dir': xrd_disc_dir, 'keys': ['xrd_disc']})
-    
+
     xrd_cont_dir = os.path.join(root, "xrd_cont")
     xrd_cont_paths = glob(os.path.join(xrd_cont_dir, "*.pkl.gz"))
     if len(xrd_cont_paths) > 0:
