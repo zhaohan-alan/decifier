@@ -1,0 +1,23 @@
+output_folder: "master_experiment_baseline_large"
+debug_max: null
+use_deprecated_keys: false
+fingerprint_comparison: true
+structural_diversity: false
+crystal_system_metric_comparison: true
+metrics_vs_seq_len: false
+validity_comparison: true
+metrics_comparison: true
+
+use_saved_data: true
+
+vlines: [1, 3]
+
+pickle_dict:
+  deCIFer-U: experiments/no_conditioning_with_boundary_masking/comparisons/no_prompt.pkl
+  deCIFer: experiments/conditioned_mlp_augmentation_large/comparisons/XRD_noprompt_0pctnoise_5pctfwhm.pkl
+
+  deCIFer-U$_C$: experiments/no_conditioning_with_boundary_masking/comparisons/composition.pkl
+  deCIFer$_C$: experiments/conditioned_mlp_augmentation_large/comparisons/XRD_composition_0pctnoise_5pctfwhm.pkl
+
+  deCIFer-U$_{CS}$: experiments/no_conditioning_with_boundary_masking/comparisons/compositionspacegroup.pkl
+  #deCIFer$_{CS}$: experiments/conditioned_mlp_augmentation_large/comparisons/XRD_composition_spacegroup_0pctnoise_5pctfwhm.pkl
