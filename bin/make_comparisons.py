@@ -1,5 +1,7 @@
 import argparse
 import os
+from matplotlib.axes import Axes
+from matplotlib.ticker import FuncFormatter
 import yaml
 import numpy as np
 import pandas as pd
@@ -10,6 +12,7 @@ import seaborn as sns
 import gzip
 import pickle
 import re
+import sys
 import subprocess
 
 from scipy.integrate import simpson
@@ -285,7 +288,7 @@ def plot_violin_box(
     ylabel,
     title,
     ax,
-    cut = 2,
+    cut = 0,
     medians=None,
     ylim = None,
     vlines = None,
@@ -300,14 +303,17 @@ def plot_violin_box(
 
     if vlines is not None:
         for x in vlines:
-            ax.axvline(x=x+0.5, ls='--', lw=1)
+            ax.axvline(x=x+0.5, ls='--', lw=1, c='k')
 
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.set_xticks(np.arange(len(labels)))
-    ax.set_xticklabels(labels, rotation=30, ha='right')
+    ax.set_xticklabels(labels, rotation=45, ha='right')
     if ylim:
         ax.set_ylim(ylim)
+
+    # Ensure yticks are formatted with two decimals
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{x:.1f}'))
 
 def plot_histogram(
     data,
@@ -344,7 +350,7 @@ def fingerprint_comparison(
 
     metrics = [
         ('rwp_clean', r"$R_{wp}$"),
-        ('s12_clean', r"$S_{12}$"),
+        #('s12_clean', r"$S_{12}$"),
         # ('hd_clean', "HD"),
         ('ws_clean', "WD"),
         # ('r2_clean', r"$R^{2}$"),
@@ -363,6 +369,8 @@ def fingerprint_comparison(
 
     # Now plot using the collected data
     fig, axs = plt.subplots(len(metrics),1,figsize=(5, 5), sharex=True)
+    if isinstance(axs, Axes):
+        axs = [axs]
     for i, (metric_key, ylabel) in enumerate(metrics):
 
         ax = axs[i]
@@ -377,19 +385,15 @@ def fingerprint_comparison(
         plot_violin_box(structured_data, labels, ylabel=ylabel, title="" if i == 0 else "", ax=ax,
                         medians=medians[metric_key], vlines=vlines)
 
-        # ax = axs[i]
-        # plot_violin_box(data_list[metric_key], labels, ylabel=ylabel, title="Fingerprints" if i == 0 else "", ax=ax,
-        #                 medians=medians[metric_key])
-
     plt.tight_layout()
     plt.show()
-    save_figure(fig, os.path.join(output_folder, "fingerprint_violin.png"))
+    save_figure(fig, os.path.join(output_folder, "fingerprint_violin.pdf"))
 
 def save_figure(
     fig,
     output_path,
 ):
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=200, bbox_inches='tight')
 
 def crystal_system_metric_comparison(
     df_data,
@@ -428,83 +432,89 @@ def crystal_system_metric_comparison(
     ]
 
     crystal_system_order = ['Triclinic', 'Monoclinic', 'Orthorhombic',
-                            'Tetragonal', 'Trigonal', 'Hexagonal', 'Cubic', 'Unknown']
+                            'Tetragonal', 'Trigonal', 'Hexagonal', 'Cubic']
 
     # Plotting mean values per crystal system across datasets using matplotlib
-    fig, axs = plt.subplots(len(metrics),1,figsize=(14, 10), sharex=True)
+    fig, axs = plt.subplots(len(metrics),1,figsize=(5, 5), sharex=True)
     for i, (metric_key, metric_label) in enumerate(metrics):
-        # Collect mean and median values for each crystal system across datasets
         mean_dfs = []
         for label in labels:
             df_dict = df_data[label].copy()
-            #print(df_dict)
-            # Convert df_dict to DataFrame
             if isinstance(df_dict, pd.DataFrame):
                 df = df_dict.copy()
             elif isinstance(df_dict, dict):
-                # Convert dict to DataFrame
                 df = pd.DataFrame.from_dict(df_dict)
             else:
                 raise ValueError(f"df_data[{label}] is not a DataFrame or dict")
             df = df.dropna(subset=['spacegroup_num_sample'])
-            # Map spacegroup numbers to crystal systems
             df['crystal_system'] = df['spacegroup_num_sample'].apply(get_crystal_system)
+            df = df[df['crystal_system'].notna()]  # Remove rows with 'Unknown' systems
             grouped = df.groupby('crystal_system')
             mean_values = grouped[metric_key].mean().reset_index()
+            std_values = grouped[metric_key].std().reset_index()
+            mean_values['std'] = std_values[metric_key]
             mean_values['Dataset'] = label
             mean_dfs.append(mean_values)
 
-        # Combine all datasets
         combined_mean = pd.concat(mean_dfs)
-
-        # Use pandas pivot_table to reshape the data for plotting
         mean_pivot = combined_mean.pivot(index='crystal_system', columns='Dataset', values=metric_key)
+        std_pivot = combined_mean.pivot(index='crystal_system', columns='Dataset', values='std')
         mean_pivot = mean_pivot.reindex(crystal_system_order)
+        std_pivot = std_pivot.reindex(crystal_system_order)
 
-        # Plot bars
-        mean_pivot.plot(kind='bar', ax=axs[i])
+        x = range(len(crystal_system_order))
+        bar_width = 0.125  # Width of each bar
+        offsets = [i * bar_width - len(crystal_system_order) * bar_width / 2 + bar_width for i in range(len(labels))]
+
+        for idx, label in enumerate(labels):
+            means = mean_pivot[label].reindex(crystal_system_order).values
+            stds = std_pivot[label].reindex(crystal_system_order).values
+            lower_errors = np.clip(means - stds, a_min=0, a_max=None)  # Prevent going below zero
+            upper_errors = stds
+            axs[i].bar(
+                [pos + offsets[idx] for pos in x],
+                means,
+                yerr=[means - lower_errors, upper_errors],  # Asymmetric error bars
+                error_kw = {"elinewidth": 1.0},
+                width=bar_width,
+                label=label,
+                capsize=0,
+                edgecolor='k',
+                linewidth=1.0,
+            )
+
+        axs[i].legend().remove()  # Remove individual legends
         axs[i].set_ylabel(f'Mean {metric_label}')
-    
-    axs[0].set_title(f'Mean Metrics per Crystal System Across Datasets')
-    axs[-1].set_xlabel('Crystal System')
-    plt.xticks(rotation=90)
-    plt.tight_layout()
-        
-    save_figure(fig, os.path.join(output_folder, f"mean_per_crystal_system.png"))
-    
-    # Plotting median values per crystal system across datasets using matplotlib
-    fig, axs = plt.subplots(len(metrics),1,figsize=(14, 10), sharex=True)
-    for i, (metric_key, metric_label) in enumerate(metrics):
-        # Collect median values for each crystal system across datasets
-        median_dfs = []
-        for label in labels:
-            df = df_data[label].copy()
-            df = df.dropna(subset=['spacegroup_num_sample'])
-            # Map spacegroup numbers to crystal systems
-            df['crystal_system'] = df['spacegroup_num_sample'].apply(get_crystal_system)
-            grouped = df.groupby('crystal_system')
-            median_values = grouped[metric_key].median().reset_index()
-            median_values['Dataset'] = label
-            median_dfs.append(median_values)
+        axs[i].grid(axis='y', alpha=0.2)
 
-        # Combine all datasets
-        combined_median = pd.concat(median_dfs)
+    # Generate xtick labels with space group ranges
+    xtick_labels = [f"{system} ({min(spacegroup_to_crystal_system[system])}-{max(spacegroup_to_crystal_system[system])})"
+                    for system in crystal_system_order]
+    axs[-1].set_xlabel('Crystal System (Space Group Range)')
+    axs[-1].set_xticks(range(len(crystal_system_order)))
+    axs[-1].set_xticklabels(xtick_labels, rotation=45, ha='right')
 
-        # Use pandas pivot_table to reshape the data for plotting
-        median_pivot = combined_median.pivot(index='crystal_system', columns='Dataset', values=metric_key)
-        median_pivot = median_pivot.reindex(crystal_system_order)
+    # Ensure the legend follows the order of datasets provided in `labels`
+    handles, legend_labels = axs[0].get_legend_handles_labels()
+    labels_list = list(labels)  # Convert `labels` to a list if it isn't one already
+    ordered_handles_and_labels = sorted(
+        zip(handles, legend_labels),
+        key=lambda x: labels_list.index(x[1]) if x[1] in labels_list else len(labels_list)
+    )
+    ordered_handles, ordered_labels = zip(*ordered_handles_and_labels)
 
-        # Plot bars
-        median_pivot.plot(kind='bar', ax=axs[i])
-        axs[i].set_ylabel(f'Median {metric_label}')
+    fig.legend(
+        ordered_handles,
+        ordered_labels,
+        loc='upper center',
+        bbox_to_anchor=(0.55, 1.1),
+        ncol=len(labels_list)//2,
+        fontsize=9,
+    )
 
-    axs[0].set_title(f'Median Metrics per Crystal System Across Datasets')
-    axs[-1].set_xlabel('Crystal System')
-    plt.xticks(rotation=90)
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.03, 1, 1])  # Adjust layout
     plt.show()
-
-    save_figure(fig, os.path.join(output_folder, f"median_per_crystal_system.png"))
+    save_figure(fig, os.path.join(output_folder, f"mean_per_crystal_system.pdf"))
 
 def plot_metrics_vs_cif_length_histogram(
     df_data,
@@ -605,9 +615,9 @@ def replace_underscores(text, replace_with=' '):
     """Escape underscores in text to avoid LaTeX interpretation as subscript."""
     return text.replace("_", replace_with)
 
-def latex_to_png(latex_code, output_filename='output.png', dpi=300):
+def latex_to_png(latex_code, output_folder, filename='output', dpi=300):
     # Step 1: Write LaTeX code to a .tex file
-    tex_filename = 'latex_input.tex'
+    tex_filename = os.path.join(output_folder, f'{filename}.tex')
     with open(tex_filename, 'w') as f:
         f.write(r"""
         \documentclass{standalone}
@@ -622,18 +632,19 @@ def latex_to_png(latex_code, output_filename='output.png', dpi=300):
         subprocess.run(['latex', tex_filename], check=True)
 
         # Step 3: Convert the .dvi file to PNG using `dvipng`
-        dvi_filename = tex_filename.replace('.tex', '.dvi')
-        subprocess.run(['dvipng', '-D', str(dpi), '-T', 'tight', '-o', output_filename, dvi_filename], check=True)
+        dvi_filename = filename + '.dvi'
+        subprocess.run(['dvipng', '-D', str(dpi), '-T', 'tight', '-o', os.path.join(output_folder, filename) + '.png', dvi_filename], check=True)
 
-        print(f"PNG image successfully created: {output_filename}")
+        print(f"PNG image successfully created: {filename}")
 
     except subprocess.CalledProcessError as e:
         print(f"An error occurred: {e}")
     finally:
         # Optional: Clean up the intermediate files (DVI, AUX, LOG)
-        for ext in ['aux', 'log', 'dvi', 'tex']:
-            if os.path.exists(f'latex_input.{ext}'):
-                os.remove(f'latex_input.{ext}')
+        for ext in ['aux', 'log', 'dvi']:
+             if os.path.exists(f'{filename}.{ext}'):
+                 os.remove(f'{filename}.{ext}')
+        pass
 
 def validity_comparison(
     df_data,
@@ -745,7 +756,7 @@ def validity_comparison(
     table_str += r"\end{tabular}"
 
     # Generate LaTeX table as an image
-    latex_to_png(table_str, output_filename=os.path.join(output_folder, "validity.png"))
+    latex_to_png(table_str, output_folder, filename="validity")
 
 def extract_metrics_stats(df):
     metrics_columns = [
@@ -856,96 +867,8 @@ def metrics_comparison(
 """
 
     # Generate LaTeX table as an image
-    output_filename = os.path.join(output_folder, "metrics_comparison.png")
-    latex_to_png(table_str, output_filename=output_filename)
-    print(f"LaTeX table saved as image: {output_filename}")
-
-def metrics_comparison(
-    df_data,
-    labels,
-    output_folder,
-    names=None,
-):
-    results = []
-    for idx, label in enumerate(labels):
-        # Extract stats and add the dataset label
-        metrics_stats = extract_metrics_stats(df_data[label])
-        dataset_name = escape_underscores(label)
-        if names is not None and len(names) > idx:
-            dataset_name = escape_underscores(names[idx])
-        metrics_stats['Dataset'] = dataset_name
-        results.append(metrics_stats)
-    
-    # Combine all results into a single DataFrame
-    results_df = pd.concat(results)
-    
-    # Pivot the DataFrame to get datasets as rows and metrics as columns
-    pivot_df = results_df.pivot(index='Dataset', columns='Metric', values=['mean', 'std'])
-    
-    # Flatten MultiIndex columns
-    pivot_df.columns = [f"{metric} ({stat})" for stat, metric in pivot_df.columns]
-    
-    # Define metrics and their display names
-    metrics_info = {
-        'rwp_clean': {'display_name': r"$R_{wp}$", 'better': 'lower'},
-        's12_clean': {'display_name': r"$S_{12}$", 'better': 'higher'},
-        'hd_clean': {'display_name': "HD", 'better': 'lower'},
-        'ws_clean': {'display_name': "WD", 'better': 'lower'},
-        'r2_clean': {'display_name': r"$R^{2}$", 'better': 'higher'},
-        'soap_large_distance': {'display_name': "SOAP Distance", 'better': 'higher'},
-    }
-    
-    # Prepare the LaTeX table header
-    table_str = r"""
-\begin{tabular}{l""" + "c" * len(metrics_info) + r"""}
-\toprule
-\textbf{Dataset}"""
-    for metric_key in metrics_info:
-        table_str += f" & \\textbf{{{metrics_info[metric_key]['display_name']}}}"
-    table_str += r""" \\
-\midrule
-"""
-
-    # Determine the best values for each metric
-    best_values = {}
-    for metric_key, info in metrics_info.items():
-        col_mean = f"{metric_key} (mean)"
-        if info['better'] == 'higher':
-            best_values[metric_key] = pivot_df[col_mean].max()
-        else:
-            best_values[metric_key] = pivot_df[col_mean].min()
-    
-    # Add rows to the LaTeX table
-    for dataset_name, row in pivot_df.iterrows():
-        table_str += f"\\text{{{dataset_name}}}"
-        for metric_key, info in metrics_info.items():
-            col_mean = f"{metric_key} (mean)"
-            col_std = f"{metric_key} (std)"
-            mean_value = row.get(col_mean, np.nan)
-            std_value = row.get(col_std, np.nan)
-            if pd.notna(mean_value) and pd.notna(std_value):
-                is_best = False
-                if info['better'] == 'higher' and mean_value == best_values[metric_key]:
-                    is_best = True
-                elif info['better'] == 'lower' and mean_value == best_values[metric_key]:
-                    is_best = True
-                value_str = f"{mean_value:.2f} $\\pm$ {std_value:.2f}"
-                if is_best:
-                    value_str = f"\\textbf{{{value_str}}}"
-                table_str += f" & {value_str}"
-            else:
-                table_str += " & N/A"
-        table_str += r" \\" + "\n"
-
-    # Close the table
-    table_str += r"""\bottomrule
-\end{tabular}
-"""
-
-    # Generate LaTeX table as an image
-    output_filename = os.path.join(output_folder, "metrics_comparison.png")
-    latex_to_png(table_str, output_filename=output_filename)
-    print(f"LaTeX table saved as image: {output_filename}")
+    latex_to_png(table_str, output_folder, filename="metrics_comparison")
+    print(f"LaTeX table saved as image: 'metrics_comparison.png'")
 
 
 if __name__ == "__main__":
