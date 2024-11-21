@@ -5,6 +5,7 @@ https://github.com/karpathy/nanoGPT/blob/eba36e84649f3c6d840a93092cb779a260544d0
 import os
 import copy
 import math
+import sys
 import time
 import json
 from typing import Optional
@@ -163,13 +164,16 @@ if __name__ == "__main__":
         for key in batch[0].keys():
             field_data = [item[key] for item in batch]
             
-            if isinstance(field_data[0], torch.Tensor):
+            if "disc" in key:
+                padded_seqs = pad_sequence(field_data, batch_first=True, padding_value=0.0)
+                batch_data[key] = padded_seqs
+            elif "tokenized" in key:
                 # Pad the sequences to the maximum length in the batch
                 padded_seqs = pad_sequence(field_data, batch_first=True, padding_value=tokenizer.padding_id)
                 batch_data[key] = padded_seqs
             else:
-                batch_data[key] = field_data  # Leave non-tensor fields as-is
-        
+                batch_data[key] = field_data  # Leave 
+
         return batch_data
 
     # Augmentation kwargs
