@@ -1003,6 +1003,7 @@ if __name__ == "__main__":
             debug = True,
             workers = args.workers,
         )
+        save_metadata({'xrd': xrd_dict}, args.data_dir)
     
     if args.xrd_cont:
         xrd_dict = {
@@ -1024,6 +1025,7 @@ if __name__ == "__main__":
             debug = True,
             workers = args.workers,
         )
+        save_metadata({'xrd': xrd_dict}, args.data_dir)
 
     if args.cl_emb:
         if not args.model_path:

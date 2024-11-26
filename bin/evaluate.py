@@ -956,6 +956,16 @@ def main():
     for process in processes:
         process.start()
 
+    # Temp TODO remove
+    if 'xrd' not in metadata:
+        xrd_dict = {
+            'wavelength': 'CuKa',
+            'qmin': 0.0,
+            'qmax': 10.0,
+            'qstep': 0.01,
+        }
+        metadata['xrd'] = xrd_dict
+
     # Start processing the dataset
     num_gens, num_send = process_dataset(
         h5_test_path,
