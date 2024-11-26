@@ -5,15 +5,20 @@ fingerprint_comparison: true
 structural_diversity: false
 crystal_system_metric_comparison: true
 metrics_vs_seq_len: false
-validity_comparison: true
-metrics_comparison: true
+validity_comparison: false
+metrics_comparison: false
 
 use_saved_data: true
+
+legend_ncol: 2
+color_pair_size: 1
+x_anchor: 0.6
+y_anchor: 1.15
 
 vlines: null
 
 pickle_dict:
-  deCIFer$_{CS}$: experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_0pctnoise_5pctfwhm.pkl
-  deCIFer$_{CS}^{\text{noise}}$: experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_5pctnoise_5pctfwhm.pkl
-  deCIFer$_{CS}^{\text{broad}}$: experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_1pptnoise_10pctfwhm.pkl
-  deCIFer$_{CS}^{\text{noise + broad}}$: experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_5pctnoise_10pctfwhm.pkl
+  deCIFer (None)\n(Clean): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_0pctnoise_5pctfwhm.pkl
+  deCIFer (None)\n(Noise-0.05): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_5pctnoise_5pctfwhm.pkl
+  deCIFer (None)\n(Broad-0.1): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_1pptnoise_10pctfwhm.pkl
+  deCIFer (None)\n(Noise-0.05, Broad-0.1): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_5pctnoise_10pctfwhm.pkl
