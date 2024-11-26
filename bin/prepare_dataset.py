@@ -178,15 +178,19 @@ def run_subtasks(
     # Locate pickles
     from_dir = os.path.join(root, get_from)
     pickles = glob(os.path.join(from_dir, '*.pkl.gz'))
-    if not from_gzip:
-        assert len(pickles) > 0, f"Cannot locate any files in {from_dir}"
-        paths = sorted(pickles)[:debug_max]
-        assert len(paths) > 1, f"Flagging suspicious behaviour, only 1 or less CIFs present in {from_dir}: {paths}"
+    if worker_function.__name__ == "preprocess_worker":
+        if not from_gzip:
+            cifs = glob(os.path.join(from_dir, 'raw/*.cif'))
+            assert len(cifs) > 0, f"Cannot locate any files in {from_dir}"
+            paths = sorted(cifs)[:debug_max]
+            assert len(paths) > 1, f"Flagging suspicious behaviour, only 1 or less CIFs present in {from_dir}: {paths}"
+        else:
+            assert len(pickles) == 1, f"from_gzip flag is raised, but more than one gzip file found in directory"
+            with gzip.open(pickles[0], 'rb') as f:
+                paths = pickle.load(f)[:debug_max]
+                paths = sorted(paths, key=lambda x: x[0])
     else:
-        assert len(pickles) == 1, f"from_gzip flag is raised, but more than one gzip file found in directory"
-        with gzip.open(pickles[0], 'rb') as f:
-            paths = pickle.load(f)[:debug_max]
-            paths = sorted(paths, key=lambda x: x[0])
+        paths = pickles
 
     # Make output folder
     to_dir = os.path.join(root, save_to)
@@ -289,8 +293,8 @@ def preprocess_worker(args):
     try:
         # Make structure
         if isinstance(obj, str): # Path
-            structure = Structure.from_file(obj)
             cif_name = os.path.basename(obj)
+            structure = Structure.from_file(obj)
         elif isinstance(obj, tuple): # cif string from pkl
             cif_name, cif_string = obj
             structure = parser_from_string(cif_string).get_structures()[0]
