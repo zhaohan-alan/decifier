@@ -143,7 +143,7 @@ def run_subtasks(
     announcement: Optional[str] = None,
     debug: bool = False,
     debug_max: Optional[int] = None,
-    workers: int = cpu_count() - 1,
+    num_workers: int = cpu_count() - 1,
     from_gzip: bool = False,
 ):
     if announcement:
@@ -215,7 +215,7 @@ def run_subtasks(
         listener = log_listener(log_queue, to_dir)
 
         # Parallel processing of CIF files using multiprocessing
-        with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+        with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
             results_iterator = pool.imap_unordered(worker_function, tasks)
 
             for _ in tqdm(range(len(tasks)), total=len(tasks), desc="Executing tasks...", leave=False):
@@ -264,7 +264,7 @@ def preprocess_worker(args):
             raise Exception("Unexpected type found in preprocessing step of {obj}")
         
         # Option for removing structures with occupancies below 1
-        if task_dict['remove_occ_less_than_one']:
+        if not task_dict['include_occupancy_structures']:
             for site in structure:
                 occ = list(site.species.as_dict().values())[0]
                 if occ < 1:
@@ -285,8 +285,8 @@ def preprocess_worker(args):
         cif_string = remove_oxidation_loop(cif_string)
 
         # Number precision rounding
-        cif_string = round_numbers(cif_string, task_dict['decimal_places'])
-        cif_string = format_occupancies(cif_string, task_dict['decimal_places'])
+        cif_string = round_numbers(cif_string, task_dict['num_decimal_places'])
+        cif_string = format_occupancies(cif_string, task_dict['num_decimal_places'])
 
         # Add atomic props block
         cif_string = add_atomic_props_block(cif_string)
@@ -315,7 +315,7 @@ def preprocess_worker(args):
         logger = logging.getLogger()
         logger.exception(f"Exception in worker function pre-processing CIF {cif_name}, with error:\n {e}\n\n")
         
-def xrd_disc_worker(args):
+def xrd_worker(args):
 
     # Extract arguments
     from_path, task_dict, debug, to_dir = args
@@ -347,7 +347,7 @@ def xrd_disc_worker(args):
 
         output_dict = {
             'cif_name': cif_name,
-            'xrd_disc': {
+            'xrd': {
                 'q': q_disc,
                 'iq': iq_disc,
             },
@@ -384,11 +384,11 @@ def cif_tokenizer_worker(args):
         tokenize = tokenizer.tokenize_cif
         encode = tokenizer.encode
 
-        cif_tokenized = encode(tokenize(cif_string_nosym))
+        cif_tokens = encode(tokenize(cif_string_nosym))
     
         # Save output to pickle file
         output_dict = {
-            'cif_tokenized': cif_tokenized,
+            'cif_tokens': cif_tokens,
         }
         output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
         safe_pkl_gz(output_dict, output_path)
@@ -553,7 +553,7 @@ def save_h5(h5_path, cif_names, data_types):
                         raise TypeError(f"Unsupported data type for key '{data_key}': {type(data_value)}")
             current_size += 1
 
-def serialize(root, workers, seed):
+def serialize(root, num_workers, seed):
 
     # Locate available data TODO make this automatic based on folder names etc.
     pre_dir = os.path.join(root, "preprocessed")
@@ -566,7 +566,7 @@ def serialize(root, workers, seed):
     os.makedirs(ser_dir, exist_ok=True)
     
     # Retrieve all cif names and stratification keys
-    with Pool(processes=workers) as pool:
+    with Pool(processes=num_workers) as pool:
         results = list(tqdm(pool.imap(name_and_strat, pre_paths), total=len(pre_paths), desc="Retrieving names and stratification keys", leave=False))
 
     # Seperate cif neams and stratification keys
@@ -595,20 +595,15 @@ def serialize(root, workers, seed):
     # Preprocessed
     data_types.append({'dir': pre_dir, 'keys': ['cif_name', 'cif_string', 'strat_key', 'species', 'spacegroup']})
     
-    desc_dir = os.path.join(root, "descriptors")
-    desc_paths = glob(os.path.join(desc_dir, "*.pkl.gz"))
-    if len(desc_paths) > 0:
-        data_types.append({'dir': desc_dir, 'keys': ['soap', 'acsf']})
+    xrd_dir = os.path.join(root, "xrd")
+    xrd_paths = glob(os.path.join(xrd_dir, "*.pkl.gz"))
+    if len(xrd_paths) > 0:
+        data_types.append({'dir': xrd_dir, 'keys': ['xrd']})
 
-    xrd_disc_dir = os.path.join(root, "xrd_disc")
-    xrd_disc_paths = glob(os.path.join(xrd_disc_dir, "*.pkl.gz"))
-    if len(xrd_disc_paths) > 0:
-        data_types.append({'dir': xrd_disc_dir, 'keys': ['xrd_disc']})
-
-    cif_token_dir = os.path.join(root, "cif_tokenized")
+    cif_token_dir = os.path.join(root, "cif_tokens")
     cif_token_paths = glob(os.path.join(cif_token_dir, "*.pkl.gz"))
     if len(cif_token_paths) > 0:
-        data_types.append({'dir': cif_token_dir, 'keys': ['cif_tokenized']})
+        data_types.append({'dir': cif_token_dir, 'keys': ['cif_tokens']})
 
     for cif_names, split_name in zip([cif_names_train, cif_names_val, cif_names_test], ['train', 'val', 'test']):
         h5_path = os.path.join(ser_dir, f'{split_name}.h5')
@@ -625,7 +620,7 @@ def retrieve_worker(args):
 
     return data
 
-def collect_data(root, get_from, key, workers=cpu_count() - 1):
+def collect_data(root, get_from, key, num_workers=cpu_count() - 1):
 
     # Find paths
     paths = glob(os.path.join(root, get_from, "*.pkl.gz"))
@@ -633,7 +628,7 @@ def collect_data(root, get_from, key, workers=cpu_count() - 1):
 
     # Parallel process retrieving the results
     ctx = mp.get_context('spawn')
-    with ctx.Pool(processes=workers) as pool:
+    with ctx.Pool(processes=num_workers) as pool:
         key_data = list(tqdm(pool.imap(retrieve_worker, args), total=len(paths), desc=f"Retrieving {key} from {get_from}...", leave=False))
         
     return key_data
@@ -647,31 +642,35 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--data-dir", type=str, help="Path to the outer data directory", required=True)
     parser.add_argument("--name", "-n", type=str, help="Name of data preparation", required=True)
-    parser.add_argument("--group-size", type=int, help="Spacegroup group size for stratification", default=10)
-    parser.add_argument("--decimal-places", type=int, help="Number of decimal places for floats in CIF files", default=4)
-    parser.add_argument("--include-occ", help="Include structures with occupancies less than one", action="store_false")
+    parser.add_argument("--strat-group-size", type=int, help="Spacegroup group size for stratification", default=10)
+    parser.add_argument("--num-decimal-places", type=int, help="Number of decimal places for floats in CIF files", default=4)
+    parser.add_argument("--include-occupancy-structures", help="Include structures with occupancies less than unity", action="store_true")
 
     parser.add_argument("--preprocess", help="preprocess files", action="store_true")
-    parser.add_argument("--xrd-disc", help="calculate discrete XRD", action="store_true")  # Placeholder for future implementation
-    parser.add_argument("--tokenize-cif", help="tokenize CIFs", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--xrd", help="calculate XRD patterns", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--tokenize", help="tokenize CIFs", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--serialize", help="serialize data by hdf5 convertion", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--all", help="process, calculate xrd, tokenize and serialize", action="store_true")
 
     parser.add_argument("--debug-max", help="Debug-feature: max number of files to process", type=int, default=0)
     parser.add_argument("--debug", help="Debug-feature: whether to print debug messages", action="store_true")
-    parser.add_argument("--workers", help="Number of workers for each processing step", type=int, default=0)
+    parser.add_argument("--num-workers", help="Number of workers for each processing step", type=int, default=0)
     parser.add_argument("--raw-from-gzip", help="Whether raw CIFs come packages in gzip pkl", action="store_true")
     parser.add_argument("--save-species-to-metadata", help="Extraordinary save of species to metadata", action="store_true")
 
     args = parser.parse_args()
 
-    # Remove occ
-    args.remove_occ = not args.include_occ
+    if args.all:
+        args.preprocess = True
+        args.xrd = True
+        args.tokenize = True
+        args.serialize = True
 
-    # workers
-    if args.workers == 0:
-        args.workers = cpu_count() - 1
+    # Number of multiprocessing workers
+    if args.num_workers == 0: # Default
+        args.num_workers = cpu_count() - 1
     else:
-        args.workers = min(cpu_count() - 1, args.workers)
+        args.num_workers = min(cpu_count() - 1, args.num_workers)
 
     # Make data prep directory and update data_dir
     args.data_dir = os.path.join(args.data_dir, args.name)
@@ -683,9 +682,9 @@ if __name__ == "__main__":
 
     if args.preprocess:
         preprocess_dict = {
-            'spacegroup_strat_group_size': args.group_size,
-            'decimal_places': args.decimal_places,
-            'remove_occ_less_than_one': args.remove_occ,
+            'spacegroup_strat_group_size': args.strat_group_size,
+            'num_decimal_places': args.num_decimal_places,
+            'include_occupancy_structures': args.include_occupancy_structures,
         }
         run_subtasks(
             root = args.data_dir, 
@@ -695,7 +694,7 @@ if __name__ == "__main__":
             task_kwargs_dict = preprocess_dict,
             announcement = "PREPROCESSING",
             debug = True,
-            workers = args.workers,
+            num_workers = args.num_workers,
             from_gzip = args.raw_from_gzip,
             debug_max = args.debug_max,
         )
@@ -709,6 +708,7 @@ if __name__ == "__main__":
         species = {'species': list(set([item for sublist in species for item in sublist]))}
         save_metadata(species, args.data_dir)
 
+    # If metadata species is not available, extra option for retrieving
     if args.save_species_to_metadata:
         # Save species to metadata
         species = collect_data(
@@ -719,38 +719,37 @@ if __name__ == "__main__":
         species = {'species': list(set([item for sublist in species for item in sublist]))}
         save_metadata(species, args.data_dir)
     
-    if args.xrd_disc:
+    if args.xrd:
         xrd_dict = {
             'wavelength': 'CuKa',
             'qmin': 0.0,
             'qmax': 10.0,
-            'qstep': 0.01,
         }
         run_subtasks(
             root = args.data_dir, 
-            worker_function = xrd_disc_worker,
+            worker_function = xrd_worker,
             get_from = "preprocessed",
-            save_to = "xrd_disc",
+            save_to = "xrd",
             task_kwargs_dict = xrd_dict,
-            announcement = "XRD DISC CALCULATIONS",
-            debug = True,
-            workers = args.workers,
+            announcement = "CALCULATING XRD",
+            debug = args.debug,
+            num_workers = args.num_workers,
         )
         save_metadata({'xrd': xrd_dict}, args.data_dir)
     
-    if args.tokenize_cif:
+    if args.tokenize:
         run_subtasks(
             root = args.data_dir, 
             worker_function = cif_tokenizer_worker,
             get_from = "preprocessed",
-            save_to = "cif_tokenized",
-            announcement = "TOKENIZING CIFs",
+            save_to = "cif_tokens",
+            announcement = "TOKENIZING CIFS",
             debug = args.debug,
-            workers = args.workers,
+            num_workers = args.num_workers,
         )
     
     if args.serialize:
-        serialize(args.data_dir, args.workers, args.seed)
+        serialize(args.data_dir, args.num_workers, args.seed)
 
     # Store all arguments passed to the main function in centralized metadata
     metadata = {
