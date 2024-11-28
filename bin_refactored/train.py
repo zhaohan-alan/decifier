@@ -9,8 +9,8 @@ import os
 import copy
 import math
 import time
-import json
 import yaml
+import random
 
 from typing import List
 import argparse
@@ -19,25 +19,43 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader
 from torch.utils.data import SubsetRandomSampler
+from torch.utils.data import BatchSampler
 
 from torch.nn.utils.rnn import pad_sequence
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import nullcontext
 from tqdm.auto import tqdm
 
 from omegaconf import OmegaConf
 
-from decifer.decifer_model import Decifer, DeciferConfig
-from decifer.tokenizer import Tokenizer
-from decifer.utility import RandomBatchSampler, disc_to_cont_xrd
-from decifer.decifer_dataset import DeciferDataset
+from decifer_refactored.decifer_model import Decifer, DeciferConfig
+from decifer_refactored.tokenizer import Tokenizer
+from decifer_refactored.utility import discrete_to_continuous_xrd
+from decifer_refactored.decifer_dataset import DeciferDataset
     
 # Tokenizer, get start, padding and newline IDs
 TOKENIZER = Tokenizer()
+VOCAB_SIZE = TOKENIZER.vocab_size
 START_ID = TOKENIZER.token_to_id["data_"]
 PADDING_ID = TOKENIZER.padding_id
 NEWLINE_ID = TOKENIZER.token_to_id["\n"]
+
+class RandomBatchSampler(BatchSampler):
+    def __init__(self, sampler, batch_size, drop_last):
+        super().__init__(sampler, batch_size, drop_last)
+        self.sampler = sampler
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+
+    def __iter__(self):
+        # Each time __iter__ is called, radomize the batch indices
+        batch_indices = list(self.sampler)
+        random.shuffle(batch_indices)
+
+        # Return batches of size batch_Size
+        for i in range(0, len(batch_indices), self.batch_size):
+            yield batch_indices[i:i + self.batch_size]
 
 @dataclass
 class TrainConfig:
@@ -71,7 +89,7 @@ class TrainConfig:
 
     # XRD embedder
     condition: bool = False
-    condition_embedder_hidden_layers: List[int] = [512]
+    condition_embedder_hidden_layers: List[int] = field(default_factory=lambda: [512])
 
     # Augmentation at training time
     qmin: float = 0.0
@@ -138,14 +156,16 @@ def parse_config():
     os.makedirs(C.out_dir, exist_ok=True)
 
     # Get metadata (vocab size)
-    metadata_path = os.path.join(C.dataset, "metadata.json")
-    with open(metadata_path, "r") as f:
-        metadata = json.load(f)
-    try:
-        C.vocab_size = metadata["vocab_size"]
-        print(f"Found vocab_size = {C.vocab_size} in {metadata_path}", flush=True)
-    except:
-        print(f"No metadata found, defaulting to {C.vocab_size}...")
+    # metadata_path = os.path.join(C.dataset, "metadata.json")
+    # with open(metadata_path, "r") as f:
+    #     metadata = json.load(f)
+    # try:
+    #     print(metadata)
+    #     C.vocab_size = metadata["vocab_size"]
+    #     print(f"Found vocab_size = {C.vocab_size} in {metadata_path}", flush=True)
+    # except:
+    #     print(f"No metadata for vocab_size found, defaulting to {C.vocab_size}...")
+    C.vocab_size = VOCAB_SIZE
 
     return C
 
@@ -158,10 +178,10 @@ def setup_datasets(C):
         for key in batch[0].keys():
             field_data = [item[key] for item in batch]
             # Pad the sequences to the maximum length in the batch
-            if "disc" in key:
+            if "xrd" in key:
                 padded_seqs = pad_sequence(field_data, batch_first=True, padding_value=0.0)
                 batch_data[key] = padded_seqs
-            elif "tokenized" in key:
+            elif "cif" in key:
                 padded_seqs = pad_sequence(field_data, batch_first=True, padding_value=PADDING_ID)
                 batch_data[key] = padded_seqs
             else:
@@ -170,7 +190,7 @@ def setup_datasets(C):
         return batch_data
     
     # Collect relevant data
-    dataset_fields = ["cif_tokenized", "xrd_disc.q", "xrd_disc.iq"]
+    dataset_fields = ["cif_tokens", "xrd.q", "xrd.iq"]
 
     # Initialise datasets/loaders 
     train_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/train.h5"), dataset_fields)
@@ -223,13 +243,13 @@ if __name__ == "__main__":
         'qmin': C.qmin,
         'qmax': C.qmax,
         'qstep': C.qstep,
-        'wavelength': C.wavelength,
+        # 'wavelength': C.wavelength,
         'fwhm_range': (C.fwhm_range_min, C.fwhm_range_max),
         'eta_range': (C.eta_range_min, C.eta_range_max),
         'noise_range': (C.noise_range_min, C.noise_range_max),
         'intensity_scale_range': (C.intensity_scale_range_min, C.intensity_scale_range_max),
         'mask_prob': C.mask_prob,
-        'size': len(np.arange(C.qmin, C.qmax, C.qstep))
+        # 'size': len(np.arange(C.qmin, C.qmax, C.qstep))
     }
 
     # Initialize training metrics
@@ -250,7 +270,7 @@ if __name__ == "__main__":
         n_head=C.n_head, 
         n_embd=C.n_embd, 
         block_size=C.block_size,
-        condition_size=augmentation_kwargs['size'],
+        condition_size=len(np.arange(C.qmin, C.qmax, C.qstep)),
         bias=C.bias,
         vocab_size=C.vocab_size,
         dropout=C.dropout,
@@ -348,13 +368,13 @@ if __name__ == "__main__":
                 batch = next(data_iter)
 
             # Fetch sequences and remove padding tokens
-            sequences = batch['cif_tokenized']
+            sequences = batch['cif_tokens']
             sequences = [torch.cat([seq[seq != PADDING_ID], torch.tensor([NEWLINE_ID, NEWLINE_ID], dtype=torch.long)]) for seq in sequences]
             total_sequences.extend(sequences)
 
             # Fetch conditioning and augment to cont signals
             if C.condition:
-                cond_list.extend(disc_to_cont_xrd(batch['xrd_disc.q'], batch['xrd_disc.iq'], **augmentation_kwargs)['iq'])
+                cond_list.extend(discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq'])
 
         # Now pack sequences into batches without loops
         # Concatenate all sequences into one long tensor
@@ -492,13 +512,13 @@ if __name__ == "__main__":
                     torch.save(checkpoint, os.path.join(C.out_dir, "ckpt.pt"))
 
                 if training_metrics['patience_counter'] >= C.early_stopping_patience:
-                    print(f"Early stopping triggered after {training_metrics['iter_num']} iterations")
+                    print(f"Early stopping triggered after {training_metrics['iteration_number']} iterations")
                     break
 
             else:
                 training_metrics['best_val_loss'] = 0.
 
-        if training_metrics['iter_num'] == 0 and C.eval_only:
+        if training_metrics['iteration_number'] == 0 and C.eval_only:
             break
 
         # Forward backward update, with optional gradient accumulation to simulate larger batch size
