@@ -1,4 +1,4 @@
-out_dir: 'testing_new_dataset'
+out_dir: 'testing_DELETE_OLD'
 eval_interval: 10  # how often to evaluate against the validation set
 eval_iters_train: 10
 eval_iters_val: 10
@@ -17,8 +17,8 @@ always_save_checkpoint: True
 validate: True
 
 dataset: 'data/crystallm/1k'
-batch_size: 32
-block_size: 3072
+batch_size: 16
+block_size: 512
 
 n_layer: 2
 n_head: 2

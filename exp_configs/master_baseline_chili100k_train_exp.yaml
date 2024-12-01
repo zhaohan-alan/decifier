@@ -10,7 +10,7 @@ metrics_comparison: true
 
 use_saved_data: true
 
-vlines: [1, 3]
+vlines: null # [1, 3]
 
 legend_ncol: 3
 color_pair_size: 2
@@ -18,11 +18,11 @@ x_anchor: 0.6
 y_anchor: 1.1
 
 pickle_dict:
-  deCIFer-U\n(None): experiments/no_conditioning_with_boundary_masking/comparisons/no_prompt.pkl
-  deCIFer\n(None): experiments/conditioned_mlp_augmentation/comparisons/XRD_noprompt_0pctnoise_5pctfwhm.pkl
+  #deCIFer-U\n(None): experiments/no_conditioning_with_boundary_masking/comparisons/no_prompt.pkl
+  chilltest: testing_chili100k_train/XRD_composition_0pctnoise_5pct_FWHM_CHILI.pkl
 
-  deCIFer-U\n(Comp): experiments/no_conditioning_with_boundary_masking/comparisons/composition.pkl
-  deCIFer\n(Comp): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_0pctnoise_5pctfwhm.pkl
-
-  deCIFer-U\n(Comp+SG): experiments/no_conditioning_with_boundary_masking/comparisons/compositionspacegroup.pkl
-  deCIFer\n(Comp+SG): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_0pctnoise_5pctfwhm.pkl
+  # deCIFer-U\n(Comp): experiments/no_conditioning_with_boundary_masking/comparisons/composition.pkl
+  # deCIFer\n(Comp): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_0pctnoise_5pctfwhm.pkl
+  #
+  # deCIFer-U\n(Comp+SG): experiments/no_conditioning_with_boundary_masking/comparisons/compositionspacegroup.pkl
+  # deCIFer\n(Comp+SG): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_0pctnoise_5pctfwhm.pkl

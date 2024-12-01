@@ -1,0 +1,17 @@
+experiment_folder: "testing_refactored_with_old_model"
+debug_max: null
+fingerprint_comparison: true
+crystal_system_metric_comparison: true
+metrics_vs_seq_len: false
+validity_comparison: true
+metrics_comparison: true
+
+vlines: null
+
+legend_ncol: 3
+color_pair_size: 2
+x_anchor: 0.6
+y_anchor: 1.1
+
+eval_dict:
+  test label: testing_refactored_with_old_model/eval_files/test_old_model
