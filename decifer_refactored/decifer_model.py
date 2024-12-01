@@ -16,6 +16,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+import warnings
+
 from decifer.tokenizer import Tokenizer
 TOKENIZER = Tokenizer()
 NEWLINE_ID = TOKENIZER.token_to_id["\n"]
@@ -36,6 +38,9 @@ class DeciferConfig:
     condition_size: int = 1000
     condition_embedder_hidden_layers: List[int] = field(default_factory=lambda: [512])
     plot_attention: bool = False
+    cond_hidden_size: int = 512 # Deprecated
+    cond_num_hidden_layers: int = 0 # Deprecated
+    use_old_model_format: bool = False
 
 class LayerNorm(nn.Module):
 
@@ -195,6 +200,17 @@ class Decifer(nn.Module):
                     for hidden_size in config.condition_embedder_hidden_layers[:-1]
                 ],
                 nn.Linear(config.condition_embedder_hidden_layers[-1], config.n_embd)
+            )
+        elif config.use_old_model_format:
+            # MLP to embedding size
+            cond_embedding = nn.Sequential(
+                nn.Linear(config.cond_size, config.cond_hidden_size),
+                nn.ReLU(),
+                *[
+                    nn.Sequential(nn.Linear(config.cond_hidden_size, config.cond_hidden_size), nn.ReLU())
+                    for _ in range(config.cond_num_hidden_layers)
+                ],
+                nn.Linear(config.cond_hidden_size, config.n_embd)
             )
         else:
             cond_embedding = nn.Identity() # nn's version of None

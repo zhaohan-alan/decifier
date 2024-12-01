@@ -89,6 +89,7 @@ def discrete_to_continuous_xrd(
     noise_range: Optional[Tuple[float, float]] = (0.001, 0.05),
     intensity_scale_range: Optional[Tuple[float, float]] =(0.95, 1.0),
     mask_prob: Optional[float] = 0.1,
+    **kwargs, # Ignoring
 ):
     """
     Converts discrete XRD data (q, iq) to a continuous representation using pseudo-Voigt peak broadening.

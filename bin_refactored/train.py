@@ -257,8 +257,6 @@ if __name__ == "__main__":
         'iteration_number': 0,
         'patience_counter': 0,
         'best_val_loss': float('inf'),
-        'best_model_state': None,
-        'best_optimizer_state': None,
         'train_losses': [],
         'val_losses': [],
         'epochs': [],
@@ -286,6 +284,9 @@ if __name__ == "__main__":
         checkpoint = {
             'model_args': model_args,
             'training_metrics': training_metrics,
+            'best_model_state': None,
+            'best_optimizer_state': None,
+            "local_iteration_number": 0,
             'config': dict(C),
         }
 
@@ -492,8 +493,8 @@ if __name__ == "__main__":
                     print("Patience score increasing to:", training_metrics['patience_counter'])
                 else:
                     training_metrics['best_val_loss'] = losses['val']
-                    training_metrics['best_model_state'] = copy.deepcopy(model.state_dict())
-                    training_metrics['best_optimizer_state'] = copy.deepcopy(optimizer.state_dict())
+                    checkpoint['best_model_state'] = copy.deepcopy(model.state_dict())
+                    checkpoint['best_optimizer_state'] = copy.deepcopy(optimizer.state_dict())
                     if training_metrics['patience_counter'] > 0:
                         print("Patience score resetting.")
                         training_metrics['patience_counter'] = 0

@@ -11,6 +11,7 @@ from glob import glob
 import pickle
 import gzip
 from typing import Any, Dict, Optional, Tuple
+from warnings import warn
 
 # Third-party library imports
 import torch
@@ -43,6 +44,7 @@ from decifer_refactored.utility import (
     discrete_to_continuous_xrd,
     generate_continuous_xrd_from_cif,
 )
+from bin_refactored.train import TrainConfig
 
 # Tokenizer, get start, padding and newline IDs
 TOKENIZER = Tokenizer()
@@ -119,8 +121,44 @@ def load_model_from_checkpoint(ckpt_path, device):
     
     # Checkpoint
     checkpoint = torch.load(ckpt_path, map_location=device)  # Load checkpoint
-    state_dict = checkpoint["best_model"]
+    state_dict = checkpoint.get("best_model_state", checkpoint.get("best_model"))
+    
     model_args = checkpoint["model_args"]
+
+    # Map renamed keys
+    renamed_keys = {
+        'cond_size': 'condition_size',
+        'condition_with_mlp_emb': 'condition',
+    }
+    for old_key, new_key in renamed_keys.items():
+        if old_key in model_args:
+            model_args['use_old_model_format'] = True
+            warn(
+                f"'{old_key}' is deprecated and has been renamed to '{new_key}'. "
+                "Please update your checkpoint or configuration files.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            model_args[new_key] = model_args.pop(old_key)
+    
+    # Remove unused keys
+    removed_keys = [
+        'use_lora',
+        'lora_rank',
+        'condition_with_cl_emb',
+        'cl_model_ckpt',
+        'freeze_condition_embedding',
+    ]
+    for removed_key in removed_keys:
+        if removed_key in model_args:
+            warn(
+                f"'{removed_key}' is no longer used and will be ignored. "
+                "Consider removing it from your checkpoint or configuration files.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            model_args.pop(removed_key)
+
     
     # Load the model and checkpoint
     model_config = DeciferConfig(**model_args)
@@ -216,7 +254,7 @@ def worker(input_queue, eval_files_dir, done_queue):
     # Initialize the tokenizer decoder function
     tokenizer = Tokenizer()
     decode = tokenizer.decode
-    tokenize = tokenizer.tokenize_cif
+    # tokenize = tokenizer.tokenize_cif
 
     while True:
         # Fetch task from the input queue
@@ -236,11 +274,16 @@ def worker(input_queue, eval_files_dir, done_queue):
             'model_name': task.get('model_name', 'N/A'),
             'index': task['index'],
             'rep': task['rep'],
+            'xrd_clean_dict': task['xrd_clean_dict'],
+            'xrd_augmentation_dict': task['xrd_augmentation_dict'],
             'cif_string_sample': task['cif_string_sample'],
             'cif_token_sample': task.get('cif_token_sample', None),
             'spacegroup_sample': task.get('spacegroup_sample', None),
+            'xrd_q_discrete_sample': task['xrd_q_discrete_sample'],
+            'xrd_iq_discrete_sample': task['xrd_iq_discrete_sample'],
+            'xrd_q_continuous_sample': task['xrd_q_continuous_sample'],
             'xrd_iq_continuous_sample': task['xrd_iq_continuous_sample'],
-            'seq_len_sample': len(tokenize(task.get('cif_token_sample', None))),
+            'seq_len_sample': len(task['cif_token_sample']),
             'seq_len_gen': len(task['cif_token_gen']),
             'status': status,
         }
@@ -277,8 +320,8 @@ def worker(input_queue, eval_files_dir, done_queue):
                 status.append('statistics')
                 evaluation_result_dict.update({'status': status})
 
-                # Update evaluation result with metadata and calculated descriptors
-                evaluation_result_dict['descriptors'].update({
+                # Calculate clean xrd
+                evaluation_result_dict.update({
                     'xrd_clean_gen': generate_continuous_xrd_from_cif(
                         cif_string_gen,
                         structure_name = task['cif_name'],
@@ -427,10 +470,12 @@ def process_dataset(
                 'model_name': model_name,
                 'index': i,
                 'rep': rep_num,
+                'xrd_q_discrete_sample': data['xrd.q'],
+                'xrd_iq_discrete_sample': data['xrd.iq'],
                 'xrd_q_continuous_sample': xrd_q_cont,
                 'xrd_iq_continuous_sample': xrd_iq_cont,
-                'xrd_augmentation_dict': xrd_augmentation_dict,
                 'xrd_clean_dict': xrd_clean_dict,
+                'xrd_augmentation_dict': xrd_augmentation_dict,
                 'cif_string_sample': data['cif_string'],
                 'cif_token_sample': data['cif_tokens'],
                 'cif_token_gen': cif_token_gen[rep_num],
