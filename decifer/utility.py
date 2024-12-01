@@ -25,6 +25,37 @@ from pymatgen.core.structure import Structure
 import warnings
 warnings.filterwarnings('ignore')
 
+from periodictable import elements as pelements
+
+def element_to_atomic_number(element):
+    try:
+        return pelements.symbol(element).number
+    except KeyError:
+        print(f"Invalid element symbol: {element}")
+        return None
+
+def space_group_to_crystal_system(space_group):
+    try:
+        if 1 <= space_group <= 2:
+            return 1  # Triclinic
+        elif 3 <= space_group <= 15:
+            return 2  # Monoclinic
+        elif 16 <= space_group <= 74:
+            return 3  # Orthorhombic
+        elif 75 <= space_group <= 142:
+            return 4  # Tetragonal
+        elif 143 <= space_group <= 167:
+            return 5  # Trigonal
+        elif 168 <= space_group <= 194:
+            return 6  # Hexagonal
+        elif 195 <= space_group <= 230:
+            return 7  # Cubic
+        else:
+            # print(f"Invalid space group: {space_group}")
+            return 0
+    except:
+        return 0
+
 def print_hdf5_structure(file_path):
     """
     This function opens an HDF5 file, prints its structure (groups and datasets),

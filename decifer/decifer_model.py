@@ -329,6 +329,7 @@ class Decifer(nn.Module):
         cond_vec: Optional[torch.Tensor] = None,
         targets: Optional[torch.Tensor] = None,
         start_indices_batch: List[List[int]] = [[0]],
+        custom_cond_emb: Optional[torch.Tensor] = None,
     ):
 
         device = idx.device
@@ -389,7 +390,10 @@ class Decifer(nn.Module):
             tok_emb_mask = (index_map >= 0)    # Shape: (b, max_new_t)
 
             # Compute cond_emb
-            cond_emb = self.transformer.cond_embedding(cond_vec).to(dtype=ptdtype)  # Shape: (total_insertions, n_embd)
+            if custom_cond_emb is None:
+                cond_emb = self.transformer.cond_embedding(cond_vec).to(dtype=ptdtype)  # Shape: (total_insertions, n_embd)
+            else:
+                cond_emb = custom_cond_emb
 
             # Prepare indices for gathering tok_emb and pos_emb
             gather_indices = index_map.clamp(min=0)
@@ -690,7 +694,7 @@ class Decifer(nn.Module):
         return optimizer
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None, disable_pbar=False):
+    def generate(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None, disable_pbar=False, custom_cond_emb=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -705,7 +709,7 @@ class Decifer(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond, cond_vec=cond_vec, start_indices_batch = start_indices_batch)
+            logits, _ = self(idx_cond, cond_vec=cond_vec, start_indices_batch = start_indices_batch, custom_cond_emb=custom_cond_emb)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
@@ -732,7 +736,7 @@ class Decifer(nn.Module):
         return idx
 
     @torch.no_grad()
-    def generate_batched_reps(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None, disable_pbar=False):
+    def generate_batched_reps(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None, disable_pbar=False, custom_cond_emb = None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (batch_size, seq_len)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -752,7 +756,7 @@ class Decifer(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond, cond_vec=cond_vec, start_indices_batch=start_indices_batch)
+            logits, _ = self(idx_cond, cond_vec=cond_vec, start_indices_batch=start_indices_batch, custom_cond_emb=custom_cond_emb)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
