@@ -388,9 +388,8 @@ def plot_metrics_vs_cif_length_histogram(
 
     # Define the metrics you want to plot
     metrics = [
-        ('rwp_clean', r"$R_{wp}$"),
-        ('ws_clean', "WS"),
-        # Add more metrics if needed
+        ('rwp', r"$R_{wp}$"),
+        ('wd', "WS"),
     ]
 
     # Combine dataframes and add a 'Dataset' column
@@ -722,6 +721,93 @@ def metrics_comparison(
     latex_to_png(table_str, output_folder, filename="metrics_comparison")
     print(f"LaTeX table saved as image: 'metrics_comparison.png'")
 
+def plot_validity_vs_cif_length(
+    df_data,
+    labels,
+    output_folder,
+    num_bins=75,
+    figsize=(5, 5),
+):
+    fig, axes = plt.subplots(len(labels), 1, figsize=figsize, sharex=True)
+
+    # Combine all data for the background distribution
+    all_data = pd.concat(df_data.values(), ignore_index=True)
+    all_data = all_data.dropna(subset=['seq_len_gen'])
+    all_data['seq_len_gen'] = pd.to_numeric(all_data['seq_len_gen'], errors='coerce')
+    all_data = all_data.dropna(subset=['seq_len_gen'])
+
+    # Bin 'seq_len_gen' for the background distribution
+    bins = np.linspace(all_data['seq_len_gen'].min(), all_data['seq_len_gen'].max(), num_bins + 1)
+
+    all_handles_labels = []
+
+    # Overlay frequency counts for each dataset as histograms
+    colors = sns.color_palette("tab10")[2:]
+    for ax, label, c in zip(axes, labels, colors):
+        ax.hist(
+            all_data['seq_len_gen'],
+            bins=bins,
+            histtype='step',
+            linestyle=':',
+            linewidth=1.0,
+            label='Generated Distribution'
+        )
+
+        # Add sample distribution as an outlined histogram
+        ax.hist(
+            all_data['seq_len_sample'],
+            bins=bins,
+            histtype='step',
+            linestyle='--',
+            linewidth=1.0,
+            label='Sample Distribution'
+        )
+        df = df_data[label]
+        # Ensure 'seq_len_gen' is numeric
+        df = df.dropna(subset=['seq_len_gen'])
+        df['seq_len_gen'] = pd.to_numeric(df['seq_len_gen'], errors='coerce')
+        df = df.dropna(subset=['seq_len_gen'])
+
+        # Plot dataset-specific histogram
+        ax.hist(
+            df['seq_len_gen'],
+            histtype='stepfilled',
+            bins=bins,
+            alpha=0.7,
+            color=c,
+            label=f"{label}",
+            edgecolor='k',
+        )
+
+        # Customize histogram axes
+        ax.set_yscale('log')
+        ax.grid(alpha=0.2)
+        
+        # Collect handles and labels for each subplot
+        handles, subplot_labels = ax.get_legend_handles_labels()
+        all_handles_labels.append((handles, subplot_labels))
+        
+    axes[-1].set_xlabel('CIF Token Length')
+
+    # Combine all handles and labels for the global legend
+    handles, labels = zip(*all_handles_labels)
+    handles = [h for sublist in handles for h in sublist]
+    labels = [l for sublist in labels for l in sublist]
+    unique_labels = dict(zip(labels, handles))
+
+    # Add a single legend at the top of the figure
+    fig.legend(unique_labels.values(), unique_labels.keys(), loc='upper center', ncol=3, fontsize='small')
+
+    # Add a single y-label for the entire figure
+    fig.supylabel("Frequency (log scale)", fontsize=10)
+
+    # Adjust layout and spacing
+    fig.tight_layout(rect=[0, 0, 1, 0.9])
+
+    # Save the plot
+    output_path = os.path.join(output_folder, 'validity_vs_cif_length.pdf')
+    fig.savefig(output_path)
+    plt.show()
 
 if __name__ == "__main__":
 
@@ -793,4 +879,11 @@ if __name__ == "__main__":
             legend_ncol=yaml_dictconfig.legend_ncol,
             x_anchor=yaml_dictconfig.x_anchor, 
             y_anchor=yaml_dictconfig.y_anchor
+        )
+
+    if yaml_dictconfig.validity_vs_seq_len:
+        plot_validity_vs_cif_length(
+            df_data, 
+            labels, 
+            comparison_folder,
         )
