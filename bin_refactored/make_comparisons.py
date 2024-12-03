@@ -37,7 +37,6 @@ def process_file(file_path):
             row = pickle.load(f)
 
        # If successful generation, count 
-        print(row['status'])
         if 'success' not in row['status']:
             return None
 
