@@ -155,7 +155,7 @@ def fingerprint_comparison(
 
     # Initialize figure and axes
     fig, axes = plt.subplots(
-        1, len(metrics_to_plot), figsize=(5, 5), sharey=True
+        1, len(metrics_to_plot), figsize=(5, len(dataset_labels)), sharey=True
     )
     if isinstance(axes, plt.Axes):
         axes = [axes]
@@ -246,6 +246,7 @@ def compare_crystal_system_metrics(
     legend_ncol = 3,
     x_anchor = 0.6,
     y_anchor = 1.1,
+    bar_width = 0.2,
 ) -> None:
     # Mapping spacegroup numbers to crystal systems
     spacegroup_to_crystal_system = {
@@ -277,7 +278,7 @@ def compare_crystal_system_metrics(
     crystal_systems = list(spacegroup_to_crystal_system.keys())
 
     # Create a subplot for each metric and an additional one for sample distribution
-    fig, axs = plt.subplots(1, len(metrics_to_plot) + 1, figsize=(5, 5), sharey=True, gridspec_kw={'width_ratios': [1] * len(metrics_to_plot) + [0.5]})
+    fig, axs = plt.subplots(1, len(metrics_to_plot) + 1, figsize=(5, max(len(dataset_labels),4)), sharey=True, gridspec_kw={'width_ratios': [1] * len(metrics_to_plot) + [0.5]})
     if isinstance(axs, Axes):
         axs = [axs]
 
@@ -308,7 +309,6 @@ def compare_crystal_system_metrics(
         std_pivot = combined_data.pivot(index='crystal_system', columns='Dataset', values='std').reindex(crystal_systems)
 
         bar_positions = range(len(crystal_systems))
-        bar_width = 0.2
         offsets = [i * bar_width - (len(dataset_labels) * bar_width / 2 - bar_width / 2) for i in range(len(dataset_labels))]
         offsets = list(reversed(offsets))
 
@@ -326,7 +326,7 @@ def compare_crystal_system_metrics(
                 label=dataset_label,
                 capsize=0,
                 edgecolor='k',
-                linewidth=1.0,
+                linewidth=0.0,
                 error_kw = {"elinewidth": 1.0},
             )
 
@@ -341,14 +341,25 @@ def compare_crystal_system_metrics(
         sample_counts.append(counts)
 
     total_counts = sum(sample_counts)
-    axs[-1].barh(
+    bars = axs[-1].barh(
         bar_positions,
         total_counts.values,
         height=0.5,
         color='grey',
         edgecolor='black',
-        linewidth=1.0,
+        linewidth=0.0,
     )
+    # Add text annotations for the sample counts
+    for bar, count in zip(bars, total_counts.values):
+        axs[-1].text(
+            count + 0.1,  # Position slightly to the right of the bar
+            bar.get_y() + bar.get_height() / 2,  # Center vertically on the bar
+            f'{int(count/len(dataset_labels))}',  # Format as integer
+            va='center',  # Vertically align center
+            ha='left',  # Horizontally align left
+            fontsize=8,  # Font size
+            color='black'  # Text color
+        )
     axs[-1].set_xlabel("Sample\nDistribution")
     axs[-1].set_xticks([])
     axs[-1].spines['right'].set_visible(False)
@@ -374,7 +385,7 @@ def compare_crystal_system_metrics(
         fontsize=9,
     )
 
-    plt.tight_layout()  # Adjust layout
+    plt.tight_layout(rect=[0,0,1,0.8])  # Adjust layout
     output_path = os.path.join(output_directory, "crystal_system_metric_comparison.pdf")
     fig.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.show()
@@ -552,6 +563,10 @@ def validity_comparison(
             dataset_name = replace_underscores(names[idx])
         else:
             dataset_name = row['Dataset']
+        
+        #dataset_name = dataset_name.replace('\n', ' ')
+        #dataset_name = dataset_name.replace(' ', '_')
+        #dataset_name = re.sub(r'[^\w\-_\.]', '', dataset_name)
 
         table_str += f"\\text{{{dataset_name}}} & "
 
@@ -692,6 +707,8 @@ def metrics_comparison(
     
     # Add rows to the LaTeX table
     for dataset_name, row in pivot_df.iterrows():
+        #dataset_name = dataset_name.replace('\n', ' ')
+        #dataset_name = re.sub(r'[^\w\-_\.]', '', dataset_name)
         table_str += f"\\text{{{dataset_name}}}"
         for metric_key, info in metrics_info.items():
             col_mean = f"{metric_key} (mean)"
@@ -726,9 +743,13 @@ def plot_validity_vs_cif_length(
     labels,
     output_folder,
     num_bins=75,
-    figsize=(5, 5),
+    legend_ncol = 3,
+    x_anchor = 0.6,
+    y_anchor = 1.1,
 ):
-    fig, axes = plt.subplots(len(labels), 1, figsize=figsize, sharex=True)
+    fig, axes = plt.subplots(len(labels), 1, figsize=(5, len(labels)), sharex=True)
+    if isinstance(axes, Axes):
+        axes = [axes]
 
     # Combine all data for the background distribution
     all_data = pd.concat(df_data.values(), ignore_index=True)
@@ -776,7 +797,7 @@ def plot_validity_vs_cif_length(
             alpha=0.7,
             color=c,
             label=f"{label}",
-            edgecolor='k',
+            #edgecolor='k',
         )
 
         # Customize histogram axes
@@ -793,16 +814,18 @@ def plot_validity_vs_cif_length(
     handles, labels = zip(*all_handles_labels)
     handles = [h for sublist in handles for h in sublist]
     labels = [l for sublist in labels for l in sublist]
+    labels = [l.replace("\\n", "\n") for l in labels]
     unique_labels = dict(zip(labels, handles))
 
     # Add a single legend at the top of the figure
-    fig.legend(unique_labels.values(), unique_labels.keys(), loc='upper center', ncol=3, fontsize='small')
+    fig.legend(unique_labels.values(), unique_labels.keys(), loc='upper center', ncol=legend_ncol, fontsize='small', bbox_to_anchor=(x_anchor, y_anchor))
 
     # Add a single y-label for the entire figure
     fig.supylabel("Frequency (log scale)", fontsize=10)
 
     # Adjust layout and spacing
-    fig.tight_layout(rect=[0, 0, 1, 0.9])
+    fig.tight_layout(rect=[0, 0, 1, 0.8])
+    #fig.tight_layout()
 
     # Save the plot
     output_path = os.path.join(output_folder, 'validity_vs_cif_length.pdf')
@@ -823,20 +846,17 @@ if __name__ == "__main__":
     
     # Create output folder
     assert os.path.exists(yaml_dictconfig.experiment_folder) and os.path.isdir(yaml_dictconfig.experiment_folder)
-    comparison_folder = os.path.join(yaml_dictconfig.experiment_folder, "comparisons")
-    os.makedirs(comparison_folder, exist_ok=True)
+    comparison_folder = yaml_dictconfig.experiment_folder
+    os.makedirs(yaml_dictconfig.experiment_folder, exist_ok=True)
 
     # Create data if not already present
     df_data = {}
-    for label, eval_folder_path in yaml_dictconfig.eval_dict.items():
-        # Try to find pre-computed file
-        safe_label = label.replace(' ', '_')
-        safe_label = re.sub(r'[^\w\-_\.]', '', safe_label)
-        comparison_pickle = os.path.join(comparison_folder, safe_label + '.pkl.gz')
+    for label, pickle_path in yaml_dictconfig.eval_dict.items():
+        comparison_pickle = os.path.join(comparison_folder, pickle_path)
         if os.path.exists(comparison_pickle):
             df_data[label] = pd.read_pickle(comparison_pickle)
         else:
-            df_data[label] = process(eval_folder_path, yaml_dictconfig.debug_max)
+            df_data[label] = process(comparison_pickle, yaml_dictconfig.debug_max)
             pd.DataFrame(df_data[label]).to_pickle(comparison_pickle)
     
     labels = yaml_dictconfig.eval_dict.keys()
@@ -876,9 +896,10 @@ if __name__ == "__main__":
             df_data, 
             labels, 
             comparison_folder,
-            legend_ncol=yaml_dictconfig.legend_ncol,
+            legend_ncol=yaml_dictconfig.legend_ncol_crystal_system,
             x_anchor=yaml_dictconfig.x_anchor, 
-            y_anchor=yaml_dictconfig.y_anchor
+            y_anchor=yaml_dictconfig.y_anchor,
+            bar_width=yaml_dictconfig.bar_width,
         )
 
     if yaml_dictconfig.validity_vs_seq_len:
@@ -886,4 +907,7 @@ if __name__ == "__main__":
             df_data, 
             labels, 
             comparison_folder,
+            x_anchor=yaml_dictconfig.x_anchor, 
+            y_anchor=yaml_dictconfig.y_anchor,
+            legend_ncol=yaml_dictconfig.legend_ncol_validity,
         )

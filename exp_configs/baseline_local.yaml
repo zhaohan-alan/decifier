@@ -1,0 +1,26 @@
+experiment_folder: experiments/model__conditioned_mlp_augmentation__context_3076/baseline
+debug_max: null
+fingerprint_comparison: true
+crystal_system_metric_comparison: false
+metrics_vs_seq_len: false
+validity_vs_seq_len: false
+
+validity_comparison: false
+metrics_comparison: false
+
+vlines: [1, 3]
+
+legend_ncol: 3
+color_pair_size: 2
+x_anchor: 0.5
+y_anchor: 1.0
+
+bar_width: 0.2
+
+eval_dict:
+  deCIFer-U (None): deCIFerU_None_modified.pkl.gz
+  deCIFer (None): deCIFer_None.pkl.gz
+  deCIFer-U (Comp): deCIFerU_Comp_modified.pkl.gz
+  deCIFer (Comp): deCIFer_Comp.pkl.gz
+  deCIFer-U (Comp+SG): deCIFerU_CompSG_modified.pkl.gz
+  deCIFer (Comp+SG): deCIFer_CompSG.pkl.gz
