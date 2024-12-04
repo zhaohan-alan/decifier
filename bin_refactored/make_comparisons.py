@@ -860,7 +860,7 @@ if __name__ == "__main__":
         elif os.path.exists(full_path) and full_path.endswith(".pkl.gz"):
             df_data[label] = pd.read_pickle(full_path)
         else:
-            raise Exception("Could not find pickle at {full_path}")
+            raise Exception(f"Could not find pickle at {full_path}")
 
         #comparison_pickle = os.path.join(comparison_folder, pickle_path)
         #if os.path.exists(comparison_pickle):
@@ -868,6 +868,8 @@ if __name__ == "__main__":
         #else:
         #    df_data[label] = process(comparison_pickle, yaml_dictconfig.debug_max)
         #    pd.DataFrame(df_data[label]).to_pickle(comparison_pickle)
+
+    os.makedirs(yaml_dictconfig.output_folder, exist_ok=True)
     
     labels = yaml_dictconfig.eval_dict.keys()
 
@@ -875,21 +877,21 @@ if __name__ == "__main__":
         validity_comparison(
             df_data,
             labels, 
-            comparison_folder,
+            yaml_dictconfig.output_folder,
         )
 
     if yaml_dictconfig.metrics_comparison:
         metrics_comparison(
             df_data, 
             labels, 
-            comparison_folder,
+            yaml_dictconfig.output_folder,
         )
     
     if yaml_dictconfig.fingerprint_comparison:
         fingerprint_comparison(
             df_data, 
             labels,
-            comparison_folder,
+            yaml_dictconfig.output_folder,
             vertical_lines = yaml_dictconfig.vlines, 
             color_pair_size=yaml_dictconfig.color_pair_size
         )
@@ -898,14 +900,14 @@ if __name__ == "__main__":
         plot_metrics_vs_cif_length_histogram(
             df_data, 
             labels, 
-            comparison_folder,
+            yaml_dictconfig.output_folder,
         )
     
     if yaml_dictconfig.crystal_system_metric_comparison:
         compare_crystal_system_metrics(
             df_data, 
             labels, 
-            comparison_folder,
+            yaml_dictconfig.output_folder,
             legend_ncol=yaml_dictconfig.legend_ncol_crystal_system,
             x_anchor=yaml_dictconfig.x_anchor, 
             y_anchor=yaml_dictconfig.y_anchor,
@@ -916,7 +918,7 @@ if __name__ == "__main__":
         plot_validity_vs_cif_length(
             df_data, 
             labels, 
-            comparison_folder,
+            yaml_dictconfig.output_folder,
             x_anchor=yaml_dictconfig.x_anchor, 
             y_anchor=yaml_dictconfig.y_anchor,
             legend_ncol=yaml_dictconfig.legend_ncol_validity,
