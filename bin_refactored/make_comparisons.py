@@ -846,18 +846,28 @@ if __name__ == "__main__":
     
     # Create output folder
     assert os.path.exists(yaml_dictconfig.experiment_folder) and os.path.isdir(yaml_dictconfig.experiment_folder)
-    comparison_folder = yaml_dictconfig.experiment_folder
-    os.makedirs(yaml_dictconfig.experiment_folder, exist_ok=True)
+    exp_folder = yaml_dictconfig.experiment_folder
 
     # Create data if not already present
     df_data = {}
-    for label, pickle_path in yaml_dictconfig.eval_dict.items():
-        comparison_pickle = os.path.join(comparison_folder, pickle_path)
-        if os.path.exists(comparison_pickle):
-            df_data[label] = pd.read_pickle(comparison_pickle)
+    for label, path in yaml_dictconfig.eval_dict.items():
+        # Determine if the path is a pickle or a folder
+        full_path = os.path.join(exp_folder, path)
+        if os.path.exists(full_path) and os.path.isdir(full_path):
+            df_data[label] = process(full_path, yaml_dictconfig.debug_max)
+            pickle_path = os.path.join(exp_folder, path + '.pkl.gz')
+            pd.DataFrame(df_data[label]).to_pickle(pickle_path)
+        elif os.path.exists(full_path) and full_path.endswith(".pkl.gz"):
+            df_data[label] = pd.read_pickle(full_path)
         else:
-            df_data[label] = process(comparison_pickle, yaml_dictconfig.debug_max)
-            pd.DataFrame(df_data[label]).to_pickle(comparison_pickle)
+            raise Exception("Could not find pickle at {full_path}")
+
+        #comparison_pickle = os.path.join(comparison_folder, pickle_path)
+        #if os.path.exists(comparison_pickle):
+        #    df_data[label] = pd.read_pickle(comparison_pickle)
+        #else:
+        #    df_data[label] = process(comparison_pickle, yaml_dictconfig.debug_max)
+        #    pd.DataFrame(df_data[label]).to_pickle(comparison_pickle)
     
     labels = yaml_dictconfig.eval_dict.keys()
 
