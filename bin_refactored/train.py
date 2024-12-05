@@ -313,15 +313,15 @@ if __name__ == "__main__":
 
         # Update checkpoint
         for key in ['train_losses', 'val_losses', 'epochs']:
-            if key in checkpoint:
-                checkpoint[key] = checkpoint[key]
+            if key in checkpoint['training_metrics']:
+                checkpoint['training_metrics'][key] = checkpoint['training_metrics'][key]
                 print(f"Loaded {key}.")
             else:
-                checkpoint[key] = []
+                checkpoint['training_metrics'][key] = []
                 print(f"Could not find {key}, creating empty list")
 
-        iteration_number = checkpoint["iteration_number"]
-        best_val_loss = checkpoint["best_val_loss"]
+        training_metrics['iteration_number'] = checkpoint["training_metrics"]["iteration_number"]
+        training_metrics['best_val_loss'] = checkpoint["training_metrics"]["best_val_loss"]
     else:
         raise Exception(f"[init_from] '{C.init_from}' not recognized")
 
