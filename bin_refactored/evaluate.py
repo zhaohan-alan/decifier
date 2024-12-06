@@ -428,7 +428,7 @@ def process_dataset(
     # Load the dataset
     dataset = DeciferDataset(dataset_path, ["cif_name", "cif_tokens", "xrd.q", "xrd.iq", "cif_string", "spacegroup"])
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl.gz")))
-    num_generations = len(dataset) * num_repetitions if debug_max is None else min(len(dataset) * num_repetitions, debug_max)
+    num_generations = len(dataset) * num_repetitions - len(existing_eval_files) if debug_max is None else min(len(dataset) * num_repetitions, debug_max)
     num_send = num_generations
     pbar = tqdm(total=num_generations, desc='Generating and parsing evaluation tasks...', leave=True)
     padding_id = Tokenizer().padding_id
