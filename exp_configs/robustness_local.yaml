@@ -1,12 +1,12 @@
-experiment_folder: model__conditioned_mlp_augmentation__context_3076
+experiment_folder: experiments/model__conditioned_mlp_augmentation__context_3076/robustness
 debug_max: null
-fingerprint_comparison: false
-crystal_system_metric_comparison: false
+fingerprint_comparison: true
+crystal_system_metric_comparison: true
 metrics_vs_seq_len: false
-validity_vs_seq_len: false
+validity_vs_seq_len: true
 
-validity_comparison: false
-metrics_comparison: false
+validity_comparison: true
+metrics_comparison: true
 
 vlines: [3]
 
@@ -18,17 +18,17 @@ y_anchor: 1.0
 
 bar_width: 0.1 #0.065
 
-output_folder: model__conditioned_mlp_augmentation__context_3076/robustness
+output_folder: experiments/model__conditioned_mlp_augmentation__context_3076/robustness
 
 eval_dict:
-  $\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.05\degree$: eval_files/none_N-0p00_B-0p05
-  $\sigma_{\text{noise}}=0.05$\n$\text{FWHM}=0.05\degree$: eval_files/none_N-0p05_B-0p05
-  $\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.10\degree$: eval_files/none_N-0p00_B-0p10
-  $\sigma_{\text{noise}}=0.05$\n$\text{FWHM}=0.10\degree$: eval_files/none_N-0p05_B-0p10
+  $\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.05\degree$: none_N-0p00_B-0p05.pkl.gz
+  $\sigma_{\text{noise}}=0.05$\n$\text{FWHM}=0.05\degree$: none_N-0p05_B-0p05.pkl.gz
+  $\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.10\degree$: none_N-0p00_B-0p10.pkl.gz
+  $\sigma_{\text{noise}}=0.05$\n$\text{FWHM}=0.10\degree$: none_N-0p05_B-0p10.pkl.gz
 
-  $\sigma_{\text{noise}}=0.10$\n$\text{FWHM}=0.05\degree$: eval_files/none_N-0p10_B-0p05
-  $\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.20\degree$: eval_files/none_N-0p00_B-0p20
-  $\sigma_{\text{noise}}=0.10$\n$\text{FWHM}=0.20\degree$: eval_files/none_N-0p10_B-0p20
+  $\sigma_{\text{noise}}=0.10$\n$\text{FWHM}=0.05\degree$: none_N-0p10_B-0p05.pkl.gz
+  $\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.20\degree$: none_N-0p00_B-0p20.pkl.gz
+  $\sigma_{\text{noise}}=0.10$\n$\text{FWHM}=0.20\degree$: none_N-0p10_B-0p20.pkl.gz
   
   # (None) (N-0p00) (B-0p05): deCIFer_None_N-0p00_B-0p05.pkl.gz
   # (None) (N-0p05) (B-0p05): deCIFer_None_N-0p05_B-0p05.pkl.gz

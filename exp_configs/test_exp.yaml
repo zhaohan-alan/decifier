@@ -1,17 +1,24 @@
-output_folder: "experiments/conditioned_mlp_augmentation_large/comparisons"
+experiment_folder: experiments/model__conditioned_mlp_augmentation__context_3076
 debug_max: null
-use_deprecated_keys: false
 fingerprint_comparison: true
-structural_diversity: false
 crystal_system_metric_comparison: false
 metrics_vs_seq_len: false
-validity_comparison: true
+validity_vs_seq_len: false
 
-use_saved_data: false
+validity_comparison: false
+metrics_comparison: false
 
-eval_folder_dict:
-  XRD_composition_0pctnoise_5pctfwhm: experiments/conditioned_mlp_augmentation_large/eval_files/composition_0pctnoise_5pctfwhm
+vlines: [1, 3]
 
-# pickle_dict:
-#   aug X: test/aug_X.pkl
-#   aug X + C: test/aug_X__C.pkl
+legend_ncol: 3
+color_pair_size: 2
+x_anchor: 0.5
+y_anchor: 1.0
+
+bar_width: 0.2
+
+output_folder: "experiments/model__conditioned_mlp_augmentation__context_3076/test_comparisons"
+
+eval_dict:
+  test1: test_eval_files/
+  test2: baseline/deCIFerU_None_modified.pkl.gz

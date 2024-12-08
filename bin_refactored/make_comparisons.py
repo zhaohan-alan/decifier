@@ -3,6 +3,7 @@
 import os
 import re
 import gzip
+from matplotlib.patches import Patch
 import yaml
 import pickle
 import argparse
@@ -23,6 +24,85 @@ from omegaconf import OmegaConf
 from multiprocessing import Pool, cpu_count
 
 from decifer_refactored.utility import extract_space_group_symbol, space_group_symbol_to_number
+
+from colorsys import rgb_to_hls, hls_to_rgb
+import matplotlib.colors as mcolors
+def adjust_lightness(hex_colors, lightness_factor):
+    """
+    Adjust the lightness of a list of HEX colors.
+    
+    Parameters:
+        hex_colors (list of str): List of HEX color codes.
+        lightness_factor (float): Factor to adjust lightness (1.0 = no change, <1 = darker, >1 = lighter).
+        
+    Returns:
+        list of str: List of HEX color codes with adjusted lightness.
+    """
+    adjusted_colors = []
+    for hex_color in hex_colors:
+        # Convert HEX to RGB
+        rgb = mcolors.hex2color(hex_color)
+        # Convert RGB to HLS
+        hls = rgb_to_hls(*rgb)
+        # Adjust the lightness
+        adjusted_hls = (hls[0], min(max(hls[1] * lightness_factor, 0), 1), hls[2])
+        # Convert back to RGB
+        adjusted_rgb = hls_to_rgb(*adjusted_hls)
+        # Convert RGB back to HEX
+        adjusted_colors.append(mcolors.to_hex(adjusted_rgb))
+    return adjusted_colors
+
+def adjust_saturation(hex_colors, saturation_factor):
+    """
+    Adjust the saturation of a list of HEX colors.
+    
+    Parameters:
+        hex_colors (list of str): List of HEX color codes.
+        saturation_factor (float): Factor to adjust saturation (1.0 = no change, >1 = more saturated, <1 = less saturated).
+        
+    Returns:
+        list of str: List of HEX color codes with adjusted saturation.
+    """
+    adjusted_colors = []
+    for hex_color in hex_colors:
+        # Convert HEX to RGB
+        rgb = mcolors.hex2color(hex_color)
+        # Convert RGB to HLS
+        hls = rgb_to_hls(*rgb)
+        # Adjust the saturation
+        adjusted_hls = (hls[0], hls[1], min(max(hls[2] * saturation_factor, 0), 1))
+        # Convert back to RGB
+        adjusted_rgb = hls_to_rgb(*adjusted_hls)
+        # Convert RGB back to HEX
+        adjusted_colors.append(mcolors.to_hex(adjusted_rgb))
+    return adjusted_colors
+
+from cycler import cycler
+import matplotlib.pyplot as plt
+    
+# Array of complementary colors
+complementary_colors = ['#14b85e',
+ '#18ccd6',
+ '#296be7',
+ '#7047eb',
+ '#da66ee',
+ '#f185c0',
+ '#f5a7a3',
+ '#ebf8c2',
+ '#f5fce0',
+ '#ffffff']
+# complementary_colors = [
+#     '#bad9c8', '#d9bacb', '#d9bcba', '#d9ceba', '#d1d9ba', 
+#     '#bfd9ba', '#bad9c8', '#bad7d9', '#bac5d9', 
+#     '#c2bad9', '#d4bad9'
+# ]
+
+# Adjust the lightness of the palette
+darker_palette = adjust_lightness(complementary_colors, lightness_factor=1.0)
+sat_palette = adjust_saturation(darker_palette, saturation_factor=0.7)
+
+# Update Matplotlib's default color cycle
+plt.rcParams['axes.prop_cycle'] = cycler(color=sat_palette)
 
 def rwp(sample, gen):
     """
@@ -128,10 +208,13 @@ def process(folder, debug_max=None) -> pd.DataFrame:
     data_list = [res for res in results if res is not None]
     return pd.DataFrame(data_list)
 
+
 def fingerprint_comparison(
     data_dict,
     dataset_labels,
     output_directory,
+    dataset_ylabels=None,
+    dataset_legend_labels=None,
     vertical_lines=None,
     metrics_to_plot=None,
     color_pair_size=1,
@@ -155,13 +238,28 @@ def fingerprint_comparison(
 
     # Initialize figure and axes
     fig, axes = plt.subplots(
-        1, len(metrics_to_plot), figsize=(5, len(dataset_labels)), sharey=True
+        1, len(metrics_to_plot), figsize=(5, len(dataset_labels)/1.5), sharey=True
     )
     if isinstance(axes, plt.Axes):
         axes = [axes]
 
+    # Array of complementary colors
+    complementary_colors = [
+        '#bad9c8', '#d9bacb', '#d9bcba', '#d9ceba', '#d1d9ba', 
+        '#bfd9ba', '#bad9c8', '#bad7d9', '#bac5d9', 
+        '#c2bad9', '#d4bad9'
+    ]
+
+    # Adjust the lightness of the palette
+    darker_palette = adjust_lightness(complementary_colors, lightness_factor=0.8)
+    sat_palette = adjust_saturation(darker_palette, saturation_factor=1.2)
+
+    # Create a Seaborn color palette
+    custom_palette = sns.color_palette(sat_palette)
+
     # Generate pairwise colors
-    colors = sns.color_palette("tab10")
+    #colors = sns.color_palette("tab10")
+    colors = custom_palette
     dataset_colors = [colors[i // color_pair_size % len(colors)] for i in range(len(dataset_labels))]
     palette = {label: dataset_colors[i] for i, label in enumerate(dataset_labels)}
 
@@ -222,13 +320,29 @@ def fingerprint_comparison(
     for ax in axes:
         ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{x:.1f}'))
     
-    axes[0].set_yticks(np.arange(len(dataset_labels)))
-    dataset_labels = [l.replace("\\n", "\n") for l in dataset_labels]
-    axes[0].set_yticklabels(dataset_labels)
+    axes[0].set_yticks(np.arange(len(dataset_ylabels)))
+    dataset_ylabels = [l.replace("\\n", "\n") for l in dataset_ylabels]
+    axes[0].set_yticklabels(dataset_ylabels)
     axes[0].set_ylabel("")
 
+    if dataset_legend_labels is not None:
+
+        # Create custom handles using `matplotlib.patches.Patch`
+        custom_handles = [
+            Patch(facecolor=color, edgecolor='black', label=label)
+            for color, label in zip(colors, dataset_legend_labels)
+        ]
+        fig.legend(
+            custom_handles,  # Ensure only relevant handles are included
+            dataset_legend_labels,
+            title="",
+            loc='upper center',  # Place legend above the subplots
+            bbox_to_anchor=(0.55, 0.9),  # Center legend relative to the figure
+            ncol=len(dataset_legend_labels)
+        )
+
     # Adjust layout and save the plot
-    plt.tight_layout()
+    plt.tight_layout(rect=[0,0,1,0.8])
     output_path = os.path.join(output_directory, "fingerprint_comparison.pdf")
     plt.savefig(output_path)
     plt.show()
@@ -324,10 +438,10 @@ def compare_crystal_system_metrics(
                 xerr=[means - lower_errors, upper_errors],
                 height=bar_width,
                 label=dataset_label,
-                capsize=0,
+                capsize=2.0,
                 edgecolor='k',
                 linewidth=0.0,
-                error_kw = {"elinewidth": 1.0},
+                error_kw = {"elinewidth": 0.75, "capthick": 0.75},
             )
 
         axs[metric_idx].set_xlabel(metric_label)
@@ -383,6 +497,26 @@ def compare_crystal_system_metrics(
         bbox_to_anchor=(x_anchor, y_anchor),
         ncol=legend_ncol,
         fontsize=9,
+    )
+    # Add an arrow pointing upwards and the text "Symmetry"
+    fig.add_artist(
+        plt.annotate(
+            '',  # No text for the arrow itself
+            xy=(0.05, 0.2),  # Arrowhead position (upwards)
+            xytext=(0.05, 0.8),  # Arrow tail position
+            xycoords='figure fraction',
+            textcoords='figure fraction',
+            arrowprops=dict(facecolor='black', arrowstyle='->'),
+        )
+    )
+
+    fig.text(
+        -0.125, 0.5,  # X and Y positions in figure coordinates
+        'Lower Symmetry',
+        ha='center',
+        va='center',
+        transform=fig.transFigure,
+        rotation='vertical',
     )
 
     plt.tight_layout(rect=[0,0,1,0.8])  # Adjust layout
@@ -890,8 +1024,10 @@ if __name__ == "__main__":
     if yaml_dictconfig.fingerprint_comparison:
         fingerprint_comparison(
             df_data, 
-            labels,
-            yaml_dictconfig.output_folder,
+            dataset_labels=labels,
+            dataset_legend_labels=yaml_dictconfig.legend_labels,
+            dataset_ylabels=yaml_dictconfig.ylabels,
+            output_directory=yaml_dictconfig.output_folder,
             vertical_lines = yaml_dictconfig.vlines, 
             color_pair_size=yaml_dictconfig.color_pair_size
         )
