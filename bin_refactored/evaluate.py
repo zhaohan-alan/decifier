@@ -438,6 +438,7 @@ def process_dataset(
             break
 
         cif_name_sample = data['cif_name']
+        cif_name_sample = cif_name_sample.split(".")[0]
         if not override and any(f.startswith(cif_name_sample) for f in existing_eval_files):
             pbar.update(1)
             num_send -= 1
