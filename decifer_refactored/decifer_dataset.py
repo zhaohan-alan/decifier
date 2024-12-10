@@ -9,21 +9,21 @@ class DeciferDataset(Dataset):
 
     def __init__(self, h5_path, data_keys):
         # Key mappings for backward compatibility
-        KEY_MAPPINGS = {
-            'cif_tokens': 'cif_tokenized',
-            'xrd.q': 'xrd_disc.q',
-            'xrd.iq': 'xrd_disc.iq',
-        }
+        #KEY_MAPPINGS = {
+        #    'cif_tokens': 'cif_tokenized',
+        #    'xrd.q': 'xrd_disc.q',
+        #    'xrd.iq': 'xrd_disc.iq',
+        #}
         self.h5_file = h5py.File(h5_path, 'r')
         self.data_keys = data_keys
 
         # Ensure that data_keys only contain datasets
         self.data = {}
         for key in self.data_keys:
-            if key in KEY_MAPPINGS.keys():
-                item = self.h5_file[KEY_MAPPINGS[key]]
-            else:
-                item = self.h5_file[key]
+            #if key in KEY_MAPPINGS.keys():
+            #    item = self.h5_file[KEY_MAPPINGS[key]]
+            #else:
+            item = self.h5_file[key]
             if isinstance(item, h5py.Dataset):
                 self.data[key] = item
             else:
