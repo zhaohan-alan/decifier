@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-import warnings
+import numpy as np
 
 from decifer.tokenizer import Tokenizer
 TOKENIZER = Tokenizer()
@@ -188,6 +188,8 @@ class Decifer(nn.Module):
         self.config = config
 
         self.tokenizer = Tokenizer()
+
+        self.attn_scores = None
 
         # Condtional embedding: either using straight MLP or direct CL encoding
         if config.condition:
@@ -447,6 +449,11 @@ class Decifer(nn.Module):
             x = block(x, attention_bias=attention_bias)
 
         x = self.transformer.ln_f(x)
+        with torch.no_grad():
+            #self.attn_scores = np.linalg.norm(x.squeeze(0).cpu().numpy(), axis=-1)
+            #self.attn_scores = np.median(x.squeeze(0).cpu().numpy(), axis=-1)
+            self.attn_scores = np.mean(x.squeeze(0).cpu().numpy(), axis=-1)
+            self.attn_scores /= np.linalg.norm(self.attn_scores)
 
         if targets is not None:
             logits = self.lm_head(x)
@@ -496,9 +503,6 @@ class Decifer(nn.Module):
                 elif pn.endswith("weight") and isinstance(m, blacklist_weight_modules):
                     # weights of blacklist modules will NOT be weight decayed
                     no_decay.add(fpn)
-
-                if 'lora' in fpn:
-                    decay.add(fpn)
 
         # subtle: "transformer.wte.weight" and "lm_head.weight" are tied, so they
         # will appear in the no_decay and decay sets respectively after the above.
