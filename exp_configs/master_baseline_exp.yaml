@@ -1,28 +1,46 @@
-output_folder: "master_experiment_baseline"
+experiment_folder: model__conditioned_mlp_augmentation__context_3076
 debug_max: null
-use_deprecated_keys: false
 fingerprint_comparison: false
-structural_diversity: false
-crystal_system_metric_comparison: true
+crystal_system_metric_comparison: false
 metrics_vs_seq_len: false
+validity_vs_seq_len: false
+
 validity_comparison: false
 metrics_comparison: false
 
-use_saved_data: true
-
 vlines: [1, 3]
 
-legend_ncol: 3
+legend_ncol_crystal_system: 3
+legend_ncol_validity: 3
 color_pair_size: 2
-x_anchor: 0.6
-y_anchor: 1.1
+x_anchor: 0.5
+y_anchor: 1.0
 
-pickle_dict:
-  #deCIFer-U\n(None): experiments/no_conditioning_with_boundary_masking/comparisons/no_prompt.pkl
-  deCIFer\n(None): experiments/conditioned_mlp_augmentation/comparisons/XRD_noprompt_0pctnoise_5pctfwhm.pkl
+legend_labels: ['None', 'Comp', 'Comp+SG']
+ylabels: ['deCIFer-U', 'deCIFer', 'deCIFer-U', 'deCIFer', 'deCIFer-U', 'deCIFer']
 
-  #deCIFer-U\n(Comp): experiments/no_conditioning_with_boundary_masking/comparisons/composition.pkl
-  deCIFer\n(Comp): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_0pctnoise_5pctfwhm.pkl
+output_folder: comparison_files
 
-  #deCIFer-U\n(Comp+SG): experiments/no_conditioning_with_boundary_masking/comparisons/compositionspacegroup.pkl
-  deCIFer\n(Comp+SG): experiments/conditioned_mlp_augmentation/comparisons/XRD_composition_spacegroup_0pctnoise_5pctfwhm.pkl
+eval_dict:
+  deCIFer (None, N-0p00, B-0p05): eval_files/none_N-0p00_B-0p05/
+  deCIFer (None, N-0p00, B-0p10): eval_files/none_N-0p00_B-0p10/
+  deCIFer (None, N-0p05, B-0p05): eval_files/none_N-0p05_B-0p05/
+  deCIFer (None, N-0p05, B-0p10): eval_files/none_N-0p05_B-0p10/
+
+  deCIFer (None, N-0p00, B-0p20): eval_files/none_N-0p00_B-0p20/
+  deCIFer (None, N-0p10, B-0p05): eval_files/none_N-0p10_B-0p05/
+  deCIFer (None, N-0p10, B-0p20): eval_files/none_N-0p10_B-0p20/
+
+  deCIFer (Comp, N-0p00, B-0p05): eval_files/comp_N-0p00_B-0p05/
+  deCIFer (Comp, N-0p00, B-0p10): eval_files/comp_N-0p00_B-0p10/
+  deCIFer (Comp, N-0p05, B-0p05): eval_files/comp_N-0p05_B-0p05/
+  deCIFer (Comp, N-0p05, B-0p10): eval_files/comp_N-0p05_B-0p10/
+  
+  deCIFer (Comp+SG, N-0p00, B-0p05): eval_files/compSG_N-0p00_B-0p05/
+  deCIFer (Comp+SG, N-0p00, B-0p10): eval_files/compSG_N-0p00_B-0p10/
+  deCIFer (Comp+SG, N-0p05, B-0p05): eval_files/compSG_N-0p05_B-0p05/
+  deCIFer (Comp+SG, N-0p05, B-0p10): eval_files/compSG_N-0p05_B-0p10/
+
+  deCIFer-U (None): ../model__nocond__context_3076/eval_files/U_none/
+  deCIFer-U (Comp): ../model__nocond__context_3076/eval_files/U_comp/
+  deCIFer-U (CompSG): ../model__nocond__context_3076/eval_files/U_compSG/
