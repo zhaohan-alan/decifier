@@ -232,7 +232,13 @@ def generate_continuous_xrd_from_cif(
         xrd_calculator = XRDCalculator(wavelength=wavelength)
         
         # Calculate the XRD pattern from the structure
-        xrd_pattern = xrd_calculator.get_pattern(structure)
+        if qmax >= (((4 * np.pi) / xrd_calc.wavelength) * np.sin(np.radians(180))):
+            two_theta_range = None
+        else:
+            tth_min = 2 * np.arcsin((qmin * xrd_calc.wavelength) / (4 * np.pi))
+            tth_max = 2 * np.arcsin((qmax * xrd_calc.wavelength) / (4 * np.pi))
+            two_theta_range = (tth_min, tth_max)
+        xrd_pattern = xrd_calculator.get_pattern(structure, two_theta_range=two_theta_range)
     
     except Exception as e:
         if debug:
