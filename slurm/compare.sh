@@ -24,4 +24,4 @@ ARGS=("$@")
 # Display the arguments
 echo "Arguments passed: ${ARGS[*]}"
 
-python bin/make_comparisons.py "${ARGS[@]}"
+python bin_refactored/make_comparisons.py "${ARGS[@]}"

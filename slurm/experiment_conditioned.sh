@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH -p gpu --gres=gpu:titanrtx:1
+#SBATCH -p gpu --gres=gpu:a100:1
+# #SBATCH -p gpu --gres=gpu:titanrtx:1
 #SBATCH --time 1-12:00:00
 #SBATCH --job-name=eval_deCIFer
-# #SBATCH --array 0-8%9
-# #SBATCH --array 0-2%3
-#SBATCH --array 0
+# #SBATCH --array 0-14%15
+#SBATCH --array 0-2%3
 #SBATCH --cpus-per-task=3
 #SBATCH --mem-per-cpu=12G
 #SBATCH --output=logs/exp_cond_%A_%a.out
@@ -26,18 +26,37 @@ EXTERNAL_ARGS=("$@")
 
 # Define specific argument sets for each array job
 ARGS_ARRAY=(
-  "--dataset-name composition_0pctnoise_5pctfwhm --add-composition"
+  # New baseline with extended Q-range
+  "--dataset-name QE_none_N-0p00_B-0p05 --add-broadening 0.05"
+  "--dataset-name QE_comp_N-0p00_B-0p05 --add-composition --add-broadening 0.05"
+  "--dataset-name QE_compSG_N-0p00_B-0p05 --add-composition --add-spacegroup --add-broadening 0.05"
+
+#  "--dataset-name none_N-0p00_B-0p05 --add-broadening 0.05"
+#  "--dataset-name comp_N-0p00_B-0p05 --add-composition --add-broadening 0.05"
+#  "--dataset-name compSG_N-0p00_B-0p05 --add-composition --add-spacegroup --add-broadening 0.05"
+#
+#  "--dataset-name none_N-0p05_B-0p05 --add-noise 0.05 --add-broadening 0.05"
+#  "--dataset-name comp_N-0p05_B-0p05 --add-composition --add-noise 0.05 --add-broadening 0.05"
+#  "--dataset-name compSG_N-0p05_B-0p05 --add-composition --add-spacegroup --add-noise 0.05 --add-broadening 0.05"
+#
+#  "--dataset-name none_N-0p00_B-0p10 --add-broadening 0.10"
+#  "--dataset-name comp_N-0p00_B-0p10 --add-composition --add-broadening 0.10"
+#  "--dataset-name compSG_N-0p00_B-0p10 --add-composition --add-spacegroup --add-broadening 0.10"
+#
+#  "--dataset-name none_N-0p05_B-0p10 --add-noise 0.05 --add-broadening 0.10"
+#  "--dataset-name comp_N-0p05_B-0p10 --add-composition --add-noise 0.05 --add-broadening 0.10"
+#  "--dataset-name compSG_N-0p05_B-0p10 --add-composition --add-spacegroup --add-noise 0.05 --add-broadening 0.10"
+# 
+#  # OOD
+#  "--dataset-name none_N-0p10_B-0p05 --add-noise 0.10 --add-broadening 0.05"
+#  "--dataset-name none_N-0p00_B-0p20 --add-broadening 0.20"
+#  "--dataset-name none_N-0p10_B-0p20 --add-noise 0.10 --add-broadening 0.20"
+  
+#  # OOD
+#  "--dataset-name comp_N-0p10_B-0p05 --add-composition --add-noise 0.10 --add-broadening 0.05"
+#  "--dataset-name comp_N-0p00_B-0p20 --add-composition --add-broadening 0.20"
+#  "--dataset-name comp_N-0p10_B-0p20 --add-composition --add-noise 0.10 --add-broadening 0.20"
 )
-#"--dataset-name composition_spacegroup_0pctnoise_5pctfwhm --add-composition --add-spacegroup"
-#"--dataset-name composition_spacegroup_1pptnoise_5pctfwhm --add-composition --add-spacegroup --add-noise 0.001 --add-broadening 0.05"
-
-#"--dataset-name noprompt_0pctnoise_5pctfwhm"
-
-#"--dataset-name composition_spacegroup_1pctnoise_5pctfwhm --add-composition --add-spacegroup --add-noise 0.01 --add-broadening 0.05"
-#"--dataset-name composition_spacegroup_5pctnoise_5pctfwhm --add-composition --add-spacegroup --add-noise 0.05 --add-broadening 0.05"
-#"--dataset-name composition_spacegroup_1pptnoise_10pctfwhm --add-composition --add-spacegroup --add-noise 0.001 --add-broadening 0.1"
-#"--dataset-name composition_spacegroup_1pctnoise_10pctfwhm --add-composition --add-spacegroup --add-noise 0.01 --add-broadening 0.1"
-#"--dataset-name composition_spacegroup_5pctnoise_10pctfwhm --add-composition --add-spacegroup --add-noise 0.05 --add-broadening 0.1"
 
 ARRAY_ARGS=${ARGS_ARRAY[$SLURM_ARRAY_TASK_ID]}
 
@@ -45,4 +64,4 @@ ARRAY_ARGS=${ARGS_ARRAY[$SLURM_ARRAY_TASK_ID]}
 echo "Model and data arguments passed: ${EXTERNAL_ARGS[*]}"
 echo "Experimental arguments passed: $ARRAY_ARGS"
 
-python bin/evaluate.py $ARRAY_ARGS "${EXTERNAL_ARGS[@]}" --clean_fwhm 0.05 --default_fwhm 0.05 --debug-max 5000
+python bin_refactored/evaluate.py $ARRAY_ARGS "${EXTERNAL_ARGS[@]}"

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time 2-00:00:00
+#SBATCH --time 3-00:00:00
 #SBATCH --job-name=prepare_data
 #SBATCH --array 0
 #SBATCH --cpus-per-task=3
@@ -24,4 +24,4 @@ ARGS=("$@")
 # Display the arguments
 echo "Arguments passed: ${ARGS[*]}"
 
-python bin/prepare_dataset.py "${ARGS[@]}"
+python bin_refactored/prepare_dataset.py "${ARGS[@]}"
