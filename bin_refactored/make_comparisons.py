@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+from os.path import exists
 import re
 import gzip
 from matplotlib.patches import Patch
@@ -25,84 +26,14 @@ from multiprocessing import Pool, cpu_count
 
 from decifer_refactored.utility import extract_space_group_symbol, space_group_symbol_to_number
 
-from colorsys import rgb_to_hls, hls_to_rgb
-import matplotlib.colors as mcolors
-def adjust_lightness(hex_colors, lightness_factor):
-    """
-    Adjust the lightness of a list of HEX colors.
-    
-    Parameters:
-        hex_colors (list of str): List of HEX color codes.
-        lightness_factor (float): Factor to adjust lightness (1.0 = no change, <1 = darker, >1 = lighter).
-        
-    Returns:
-        list of str: List of HEX color codes with adjusted lightness.
-    """
-    adjusted_colors = []
-    for hex_color in hex_colors:
-        # Convert HEX to RGB
-        rgb = mcolors.hex2color(hex_color)
-        # Convert RGB to HLS
-        hls = rgb_to_hls(*rgb)
-        # Adjust the lightness
-        adjusted_hls = (hls[0], min(max(hls[1] * lightness_factor, 0), 1), hls[2])
-        # Convert back to RGB
-        adjusted_rgb = hls_to_rgb(*adjusted_hls)
-        # Convert RGB back to HEX
-        adjusted_colors.append(mcolors.to_hex(adjusted_rgb))
-    return adjusted_colors
-
-def adjust_saturation(hex_colors, saturation_factor):
-    """
-    Adjust the saturation of a list of HEX colors.
-    
-    Parameters:
-        hex_colors (list of str): List of HEX color codes.
-        saturation_factor (float): Factor to adjust saturation (1.0 = no change, >1 = more saturated, <1 = less saturated).
-        
-    Returns:
-        list of str: List of HEX color codes with adjusted saturation.
-    """
-    adjusted_colors = []
-    for hex_color in hex_colors:
-        # Convert HEX to RGB
-        rgb = mcolors.hex2color(hex_color)
-        # Convert RGB to HLS
-        hls = rgb_to_hls(*rgb)
-        # Adjust the saturation
-        adjusted_hls = (hls[0], hls[1], min(max(hls[2] * saturation_factor, 0), 1))
-        # Convert back to RGB
-        adjusted_rgb = hls_to_rgb(*adjusted_hls)
-        # Convert RGB back to HEX
-        adjusted_colors.append(mcolors.to_hex(adjusted_rgb))
-    return adjusted_colors
-
 from cycler import cycler
 import matplotlib.pyplot as plt
     
-# Array of complementary colors
-complementary_colors = ['#14b85e',
- '#18ccd6',
- '#296be7',
- '#7047eb',
- '#da66ee',
- '#f185c0',
- '#f5a7a3',
- '#ebf8c2',
- '#f5fce0',
- '#ffffff']
-# complementary_colors = [
-#     '#bad9c8', '#d9bacb', '#d9bcba', '#d9ceba', '#d1d9ba', 
-#     '#bfd9ba', '#bad9c8', '#bad7d9', '#bac5d9', 
-#     '#c2bad9', '#d4bad9'
-# ]
-
-# Adjust the lightness of the palette
-darker_palette = adjust_lightness(complementary_colors, lightness_factor=1.0)
-sat_palette = adjust_saturation(darker_palette, saturation_factor=0.7)
+# COLORS = sns.color_palette()
+COLORS = sns.color_palette("tab10")
 
 # Update Matplotlib's default color cycle
-plt.rcParams['axes.prop_cycle'] = cycler(color=sat_palette)
+plt.rcParams['axes.prop_cycle'] = cycler(color=COLORS)
 
 def rwp(sample, gen):
     """
@@ -243,23 +174,8 @@ def fingerprint_comparison(
     if isinstance(axes, plt.Axes):
         axes = [axes]
 
-    # Array of complementary colors
-    complementary_colors = [
-        '#bad9c8', '#d9bacb', '#d9bcba', '#d9ceba', '#d1d9ba', 
-        '#bfd9ba', '#bad9c8', '#bad7d9', '#bac5d9', 
-        '#c2bad9', '#d4bad9'
-    ]
-
-    # Adjust the lightness of the palette
-    darker_palette = adjust_lightness(complementary_colors, lightness_factor=0.8)
-    sat_palette = adjust_saturation(darker_palette, saturation_factor=1.2)
-
-    # Create a Seaborn color palette
-    custom_palette = sns.color_palette(sat_palette)
-
     # Generate pairwise colors
-    #colors = sns.color_palette("tab10")
-    colors = custom_palette
+    colors = COLORS[3:]
     dataset_colors = [colors[i // color_pair_size % len(colors)] for i in range(len(dataset_labels))]
     palette = {label: dataset_colors[i] for i, label in enumerate(dataset_labels)}
 
@@ -325,7 +241,7 @@ def fingerprint_comparison(
     axes[0].set_yticklabels(dataset_ylabels)
     axes[0].set_ylabel("")
 
-    if dataset_legend_labels is not None:
+    if len(dataset_legend_labels) > 0:
 
         # Create custom handles using `matplotlib.patches.Patch`
         custom_handles = [
@@ -337,12 +253,14 @@ def fingerprint_comparison(
             dataset_legend_labels,
             title="",
             loc='upper center',  # Place legend above the subplots
-            bbox_to_anchor=(0.55, 0.9),  # Center legend relative to the figure
+            bbox_to_anchor=(0.55, 1.0),  # Center legend relative to the figure
             ncol=len(dataset_legend_labels)
         )
 
-    # Adjust layout and save the plot
-    plt.tight_layout(rect=[0,0,1,0.8])
+        # Adjust layout and save the plot
+        plt.tight_layout(rect=[0,0,1,0.9])
+    else:
+        plt.tight_layout()
     output_path = os.path.join(output_directory, "fingerprint_comparison.pdf")
     plt.savefig(output_path)
     plt.show()
@@ -599,13 +517,24 @@ def extract_validity_stats(df):
     # Ensure the columns are treated as boolean
     df[validity_columns] = df[validity_columns].astype(bool)
 
-    # Calculate the percentage of valid entries for each metric (mean and std)
+    # Calculate the percentage of valid entries for each metric (mean)
     validity_stats_mean = df[validity_columns].mean() * 100
+    
+    # Calculate the 95% confidence interval
+    n = len(df)  # Total number of samples
+    z = 1.96  # z-score for 95% confidence level
+    
+    # Convert mean to proportion for CI calculation
+    proportions = df[validity_columns].mean()
+    validity_stats_95ci = z * np.sqrt((proportions * (1 - proportions)) / n) * 100  # Scale back to percentage
+
+    # Calculate the standard deviation (for reference)
     validity_stats_std = df[validity_columns].std() * 100
     
-    # Combine mean and standard deviation into a single DataFrame
+    # Combine mean, 95% CI, and standard deviation into a single DataFrame
     validity_stats = pd.DataFrame({
         'mean (%)': validity_stats_mean,
+        '95% CI (%)': validity_stats_95ci,
         'std (%)': validity_stats_std
     })
 
@@ -668,7 +597,7 @@ def validity_comparison(
     results_df = pd.concat(results).reset_index(drop=True)
 
     # Pivot the DataFrame to get columns for each validity metric
-    results_df = results_df.pivot(index='Dataset', columns='index', values=['mean (%)', 'std (%)'])
+    results_df = results_df.pivot(index='Dataset', columns='index', values=['mean (%)', '95% CI (%)'])
 
     # Debug: Print columns before renaming
     print("Columns before renaming:", results_df.columns.tolist())
@@ -706,7 +635,7 @@ def validity_comparison(
 
         # Formula Validity
         col_mean = 'formula_validity (mean %)'
-        col_std = 'formula_validity (std %)'
+        col_std = 'formula_validity (95% CI %)'
         if col_mean in row and col_std in row:
             if row[col_mean] == max_values[col_mean]:
                 table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} & "
@@ -717,7 +646,7 @@ def validity_comparison(
 
         # Spacegroup Validity
         col_mean = 'spacegroup_validity (mean %)'
-        col_std = 'spacegroup_validity (std %)'
+        col_std = 'spacegroup_validity (95% CI %)'
         if col_mean in row and col_std in row:
             if row[col_mean] == max_values[col_mean]:
                 table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} & "
@@ -728,7 +657,7 @@ def validity_comparison(
 
         # Bond Length Validity
         col_mean = 'bond_length_validity (mean %)'
-        col_std = 'bond_length_validity (std %)'
+        col_std = 'bond_length_validity (95% CI %)'
         if col_mean in row and col_std in row:
             if row[col_mean] == max_values[col_mean]:
                 table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} & "
@@ -739,7 +668,7 @@ def validity_comparison(
 
         # Site Multiplicity Validity
         col_mean = 'site_multiplicity_validity (mean %)'
-        col_std = 'site_multiplicity_validity (std %)'
+        col_std = 'site_multiplicity_validity (95% CI %)'
         if col_mean in row and col_std in row:
             if row[col_mean] == max_values[col_mean]:
                 table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} & "
@@ -750,7 +679,7 @@ def validity_comparison(
 
         # Overall Validity
         col_mean = 'validity (mean %)'
-        col_std = 'validity (std %)'
+        col_std = 'validity (95% CI %)'
         if col_mean in row and col_std in row:
             if row[col_mean] == max_values[col_mean]:
                 table_str += f"\\textbf{{{row[col_mean]:.2f}}} ± {row[col_std]:.2f} \\\\\n"
@@ -879,9 +808,9 @@ def plot_validity_vs_cif_length(
     num_bins=75,
     legend_ncol = 3,
     x_anchor = 0.6,
-    y_anchor = 1.1,
+    y_anchor = 1.0,
 ):
-    fig, axes = plt.subplots(len(labels), 1, figsize=(5, len(labels)), sharex=True)
+    fig, axes = plt.subplots(len(labels), 1, figsize=(5, max(4, len(labels))), sharex=True)
     if isinstance(axes, Axes):
         axes = [axes]
 
@@ -897,7 +826,7 @@ def plot_validity_vs_cif_length(
     all_handles_labels = []
 
     # Overlay frequency counts for each dataset as histograms
-    colors = sns.color_palette("tab10")[2:]
+    colors = COLORS[2:]
     for ax, label, c in zip(axes, labels, colors):
         ax.hist(
             all_data['seq_len_gen'],
@@ -942,7 +871,7 @@ def plot_validity_vs_cif_length(
         handles, subplot_labels = ax.get_legend_handles_labels()
         all_handles_labels.append((handles, subplot_labels))
         
-    axes[-1].set_xlabel('CIF Token Length')
+    axes[-1].set_xlabel('Tokenized CIF Length')
 
     # Combine all handles and labels for the global legend
     handles, labels = zip(*all_handles_labels)
@@ -958,7 +887,7 @@ def plot_validity_vs_cif_length(
     fig.supylabel("Frequency (log scale)", fontsize=10)
 
     # Adjust layout and spacing
-    fig.tight_layout(rect=[0, 0, 1, 0.8])
+    fig.tight_layout(rect=[0, 0, 1, 0.9])
     #fig.tight_layout()
 
     # Save the plot
@@ -983,27 +912,21 @@ if __name__ == "__main__":
     exp_folder = yaml_dictconfig.experiment_folder
 
     # Create data if not already present
+    os.makedirs(yaml_dictconfig.output_folder, exist_ok=True)
     df_data = {}
     for label, path in yaml_dictconfig.eval_dict.items():
         # Determine if the path is a pickle or a folder
         full_path = os.path.join(exp_folder, path)
         if os.path.exists(full_path) and os.path.isdir(full_path):
             df_data[label] = process(full_path, yaml_dictconfig.debug_max)
-            pickle_path = os.path.join(exp_folder, path + '.pkl.gz')
+            safe_label = label.replace(" ", "_")
+            safe_label = re.sub(r"[^\w\-_()]", "", safe_label)
+            pickle_path = os.path.join(yaml_dictconfig.output_folder, safe_label + '.pkl.gz')
             pd.DataFrame(df_data[label]).to_pickle(pickle_path)
         elif os.path.exists(full_path) and full_path.endswith(".pkl.gz"):
             df_data[label] = pd.read_pickle(full_path)
         else:
             raise Exception(f"Could not find pickle at {full_path}")
-
-        #comparison_pickle = os.path.join(comparison_folder, pickle_path)
-        #if os.path.exists(comparison_pickle):
-        #    df_data[label] = pd.read_pickle(comparison_pickle)
-        #else:
-        #    df_data[label] = process(comparison_pickle, yaml_dictconfig.debug_max)
-        #    pd.DataFrame(df_data[label]).to_pickle(comparison_pickle)
-
-    os.makedirs(yaml_dictconfig.output_folder, exist_ok=True)
     
     labels = yaml_dictconfig.eval_dict.keys()
 
