@@ -17,8 +17,6 @@ class DeciferDataset(Dataset):
         self.h5_file = h5py.File(h5_path, 'r+')
         self.data_keys = data_keys
 
-        print(self.h5_file.keys())
-
         for key in self.h5_file.keys():
             if key in KEY_MAPPINGS.keys():
                 # Make sure that the right key is there
