@@ -1,11 +1,11 @@
-experiment_folder: experiments/model__conditioned_mlp_augmentation__context_3076/baseline
+experiment_folder: experiments/model__conditioned_mlp_augmentation__context_3076/20k_comparison_files
 debug_max: null
 fingerprint_comparison: false
-crystal_system_metric_comparison: true
+crystal_system_metric_comparison: false
 metrics_vs_seq_len: false
 validity_vs_seq_len: false
 
-validity_comparison: false
+validity_comparison: true
 metrics_comparison: false
 
 vlines: [1, 3]
@@ -21,12 +21,12 @@ bar_width: 0.25
 legend_labels: ['None', 'Comp', 'Comp+SG']
 ylabels: ['deCIFer-U', 'deCIFer', 'deCIFer-U', 'deCIFer', 'deCIFer-U', 'deCIFer']
 
-output_folder: experiments/model__conditioned_mlp_augmentation__context_3076/baseline
+output_folder: experiments/model__conditioned_mlp_augmentation__context_3076/20k_comparison_files
 
 eval_dict:
-  #deCIFer-U (None): deCIFerU_None_modified.pkl.gz
-  deCIFer (None): deCIFer_None.pkl.gz
-  #deCIFer-U (Comp): deCIFerU_Comp_modified.pkl.gz
-  deCIFer (Comp): deCIFer_Comp.pkl.gz
-  #deCIFer-U (Comp+SG): deCIFerU_CompSG_modified.pkl.gz
-  deCIFer (Comp+SG): deCIFer_CompSG.pkl.gz
+  deCIFer-U (None): deCIFer-U_(None).pkl.gz
+  deCIFer (None): deCIFer_(None_N-0p00_B-0p05).pkl.gz
+  deCIFer-U (Comp): deCIFer-U_(Comp).pkl.gz
+  deCIFer (Comp): deCIFer_(Comp_N-0p00_B-0p05).pkl.gz
+  deCIFer-U (Comp+SG): deCIFer-U_(CompSG).pkl.gz
+  deCIFer (Comp+SG): deCIFer_(CompSG_N-0p00_B-0p05).pkl.gz
