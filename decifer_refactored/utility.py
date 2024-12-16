@@ -756,7 +756,10 @@ def space_group_symbol_to_number(symbol):
 
 def get_metrics(ckpt_path):
     checkpoint = torch.load(ckpt_path, map_location='cpu')
-    metrics = checkpoint['metrics']
+    try:
+        metrics = checkpoint['training_metrics']
+    except:
+        metrics = checkpoint['metrics']
     fname = '/'.join(ckpt_path.split('/')[:-1])
     return metrics, fname
 
@@ -788,7 +791,10 @@ def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=No
         # Convert lists to numpy arrays for plotting
         losses_train = np.array(metrics['train_losses'])
         losses_val = np.array(metrics['val_losses'])
-        epochs = np.array(metrics['epoch_losses'])
+        try:
+            epochs = np.array(metrics['epoch_losses'])
+        except:
+            epochs = np.array(metrics['epochs'])
         
         # Train and validation loss plots
         p = sns.lineplot(x=epochs, y=losses_train, label=f'{legend_fname} [Train]', ax=ax_loss, linewidth=2)
