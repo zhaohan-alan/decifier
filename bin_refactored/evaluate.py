@@ -30,7 +30,6 @@ from decifer_refactored.decifer_model import Decifer, DeciferConfig
 from decifer_refactored.decifer_dataset import DeciferDataset
 from decifer_refactored.tokenizer import Tokenizer
 from decifer_refactored.utility import (
-    get_match_rate_and_rms,
     get_rmsd,
     replace_symmetry_loop_with_P1,
     extract_space_group_symbol,

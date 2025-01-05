@@ -797,13 +797,13 @@ def get_metrics(ckpt_path):
 # and from
 # https://github.com/FrederikLizakJohansen/CrystaLLM/blob/2d130f9d561136a8745ab7568ebcbd69cdac913f/bin/benchmark_metrics.py
 def get_rmsd(cif_string_sample, cif_string_gen, matcher):
-    """ Presumes valid structure or exception is thrown """
+    """ Presumes valid structures or exception is thrown """
     try:
         structure_sample = Structure.from_str(cif_string_sample, fmt="cif")
         structure_gen = Structure.from_str(cif_string_gen, fmt="cif")
         rmsd = matcher.get_rms_dist(structure_sample, structure_gen)
         if rmsd is not None:
-            return rmsd[0]
+            return rmsd[0] # Mean
         else:
             return None
     except Exception as e:

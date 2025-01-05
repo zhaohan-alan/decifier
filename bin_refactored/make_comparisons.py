@@ -81,6 +81,9 @@ def process_file(file_path):
         # Rwp
         rwp_value = rwp(xrd_iq_continuous_sample, xrd_iq_continuous_gen)
 
+        # RMSD
+        rmsd_value = row['rmsd']
+
         # Sequence lengths
         seq_len_sample = row['seq_len_sample']
         seq_len_gen = row['seq_len_gen']
@@ -97,6 +100,7 @@ def process_file(file_path):
         out_dict = {
             'rwp': rwp_value,
             'wd': wd_value,
+            'rmsd': rmsd_value,
             'cif_sample': cif_sample,
             'xrd_q_discrete_sample': xrd_q_discrete_sample,
             'xrd_iq_discrete_sample': xrd_iq_discrete_sample,
