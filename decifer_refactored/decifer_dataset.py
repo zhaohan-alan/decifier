@@ -9,7 +9,7 @@ class DeciferDataset(Dataset):
     def __init__(self, h5_path, data_keys):
         # Key mappings for backward compatibility
         KEY_MAPPINGS = {
-            'cif_tokens': 'cif_tokens',
+            'cif_tokens': 'cif_tokenized',
             'xrd.q': 'xrd_disc.q',
             'xrd.iq': 'xrd_disc.iq',
         }

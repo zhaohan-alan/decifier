@@ -454,9 +454,15 @@ def process_dataset(
                 data['xrd.q'].unsqueeze(0), data['xrd.iq'].unsqueeze(0), **(xrd_augmentation_dict or {})
             )
             cond_vec = xrd_input['iq'].to(model.device)
-            cif_token_gen = model.generate_batched_reps(
-                prompt, max_new_tokens, cond_vec, [[0]], temperature, top_k
-            ).cpu().numpy()
+            try:
+                cif_token_gen = model.generate_batched_reps(
+                    prompt, max_new_tokens, cond_vec, [[0]], temperature, top_k
+                ).cpu().numpy()
+            except:
+                print(f"Error in generating CIF for {cif_name_sample}")
+                pbar.update(1)
+                num_send -= 1
+                continue
             cif_token_gen = [ids[ids != padding_id] for ids in cif_token_gen]
         else:
             cif_token_gen = [data['cif_tokens'][data['cif_tokens'] != padding_id].cpu().numpy()]
