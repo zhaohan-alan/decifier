@@ -18,6 +18,7 @@ import torch
 import numpy as np
 from tqdm.auto import tqdm
 from pymatgen.io.cif import CifParser
+from pymatgen.analysis.structure_matcher import StructureMatcher
 
 # Conditional imports for backwards compatibility with older pymatgen versions
 try:
@@ -29,6 +30,8 @@ from decifer_refactored.decifer_model import Decifer, DeciferConfig
 from decifer_refactored.decifer_dataset import DeciferDataset
 from decifer_refactored.tokenizer import Tokenizer
 from decifer_refactored.utility import (
+    get_match_rate_and_rms,
+    get_rmsd,
     replace_symmetry_loop_with_P1,
     extract_space_group_symbol,
     reinstate_symmetry_loop,
@@ -254,7 +257,9 @@ def worker(input_queue, eval_files_dir, done_queue):
     # Initialize the tokenizer decoder function
     tokenizer = Tokenizer()
     decode = tokenizer.decode
-    # tokenize = tokenizer.tokenize_cif
+
+    # Initialise pymatgen Matcher
+    matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
 
     while True:
         # Fetch task from the input queue
@@ -316,6 +321,10 @@ def worker(input_queue, eval_files_dir, done_queue):
 
                 # Evaluate CIF validity and structure
                 evaluation_result_dict = get_cif_statistics(cif_string_gen, evaluation_result_dict)
+
+                # Evaluate matching structures by RMSD
+                rmsd = get_rmsd(task['cif_string_sample'], cif_string_gen, matcher=matcher)
+                evaluation_result_dict.update({'rmsd': rmsd})
             
                 status.append('statistics')
                 evaluation_result_dict.update({'status': status})
