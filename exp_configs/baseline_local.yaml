@@ -1,11 +1,11 @@
 experiment_folder: experiments/model__conditioned_mlp_augmentation__context_3076/20k_comparison_files
 debug_max: null
-fingerprint_comparison: false
-crystal_system_metric_comparison: false
+fingerprint_comparison: true
+crystal_system_metric_comparison: true
 metrics_vs_seq_len: false
 validity_vs_seq_len: false
 
-validity_comparison: true
+validity_comparison: false
 metrics_comparison: false
 
 vlines: [1, 3]

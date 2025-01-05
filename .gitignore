@@ -29,6 +29,7 @@ cl_experiments/
 **/*.png
 **/*.jpg
 **/*.csv
+**/*.pdf
 
 # Ignore eval files
 **/*.parquet
