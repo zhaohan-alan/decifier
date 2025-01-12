@@ -1,139 +1,110 @@
 #!/usr/bin/env python3
 import os
-import json
-import base64
 import argparse
 import h5py
 import numpy as np
 
-###############################################################################
-# Define a custom JSON encoder that can handle:
-# - NumPy arrays   -> Convert to Python lists
-# - bytes objects  -> Convert to base64 strings
-###############################################################################
-class NumpyEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.ndarray):
-            # Convert NumPy array to a nested list
-            return obj.tolist()
-        elif isinstance(obj, bytes):
-            # Convert raw bytes to a Base64-encoded ASCII string
-            return base64.b64encode(obj).decode('ascii')
-        return super().default(obj)
-
 def combine_h5_files(h5_files, output_h5):
     """
-    Combine multiple HDF5 files into a single HDF5 file by streaming chunks 
-    instead of loading everything in memory at once. Datasets with object dtype 
-    (dtype('O')) are stored as variable-length strings. For each element that 
-    is a list, np.ndarray, or bytes, we JSON-serialize it using NumpyEncoder.
+    Combine multiple HDF5 files into a single HDF5 file by:
+      1) Collecting 'object'-type datasets from each file
+      2) Creating a vlen dataset for numeric or string data
+      3) Copying data in chunks
+    This preserves the "array-of-arrays" structure for numeric data 
+    (e.g. xrd.q remains an array of float arrays) and raw bytes/strings 
+    remain string data, instead of JSON-encoded text.
     """
     if not h5_files:
-        print(f"No files were found to combine for {output_h5}. Skipping.")
+        print(f"No files to combine for {output_h5}. Skipping.")
         return
 
-    combined_data = {}
-    total_files = len(h5_files)
+    # Step A: Identify the union of all dataset keys
+    all_keys = set()
+    for path in h5_files:
+        with h5py.File(path, "r") as f_in:
+            all_keys.update(f_in.keys())
 
-    # Step 1: Read each HDF5 file in memory
-    for file_idx, h5_file in enumerate(h5_files):
-        print(f"\nProcessing file {file_idx + 1} of {total_files}: {h5_file}")
-        print("  Reading data...")
-        with h5py.File(h5_file, 'r') as f_in:
-            # If first file, initialize combined_data keys
-            if file_idx == 0:
-                for key in f_in.keys():
-                    combined_data[key] = []
-            # Append arrays
-            for key in f_in.keys():
-                arr = f_in[key][()]  # loads entire dataset
-                combined_data[key].append(arr)
-        print(f"  Finished reading {h5_file}.")
+    # Step B: Read data in memory (still chunkable, but for brevity we do full read)
+    #         If your data is huge, see the chunk-based approach below.
+    data_map = {k: [] for k in all_keys}
+    for path in h5_files:
+        with h5py.File(path, "r") as f_in:
+            file_keys = f_in.keys()
+            for k in all_keys:
+                # If the file doesn’t have this dataset, skip
+                if k not in file_keys:
+                    continue
+                arr = f_in[k][()]
+                data_map[k].append(arr)
 
-    # Step 2: Create/overwrite output HDF5
-    print(f"\nCombining data into {output_h5} ...")
-    with h5py.File(output_h5, 'w') as f_out:
-        for key, arrays in combined_data.items():
-            print(f"  Combining dataset '{key}'...")
+    # Step C: Create the output file and write each dataset
+    with h5py.File(output_h5, "w") as f_out:
+        for k, list_of_arrays in data_map.items():
+            if not list_of_arrays:
+                continue
 
-            # (A) Compute final shape
-            total_length = sum(arr.shape[0] for arr in arrays)
-            rest_shape = arrays[0].shape[1:]
-            is_object_dtype = any(arr.dtype == np.dtype('O') for arr in arrays)
+            # 1) Concatenate them along the first dimension
+            total_length = sum(a.shape[0] for a in list_of_arrays)
 
-            # (B) Create output dataset
-            if is_object_dtype:
-                print(f"    Detected object dtype for '{key}'. Will store as variable-length strings.")
-                string_dtype = h5py.vlen_dtype(str)
-                out_dset = f_out.create_dataset(
-                    key,
-                    shape=(total_length,) + rest_shape,
-                    maxshape=(None,) + rest_shape,
-                    dtype=string_dtype,
-                    chunks=True
-                )
+            # 2) Inspect the *first element of the first array* 
+            #    to guess how to store things
+            sample_item = list_of_arrays[0][0]  # e.g., could be np.ndarray or bytes or str
+
+            # Decide if numeric vlen or string vlen
+            # (You can extend logic for arrays-of-int, arrays-of-float, etc.)
+            if isinstance(sample_item, np.ndarray):
+                # Suppose it’s numeric (float or int) arrays
+                # Make a vlen dtype of the same type
+                if sample_item.dtype.kind in ("i","f"):
+                    vlen_dtype = h5py.vlen_dtype(sample_item.dtype)
+                else:
+                    # fallback - store as vlen string
+                    vlen_dtype = h5py.vlen_dtype(str)
+            elif isinstance(sample_item, (str, bytes)):
+                # textual data
+                vlen_dtype = h5py.vlen_dtype(str)
             else:
-                out_dtype = arrays[0].dtype
-                out_dset = f_out.create_dataset(
-                    key,
-                    shape=(total_length,) + rest_shape,
-                    maxshape=(None,) + rest_shape,
-                    dtype=out_dtype,
-                    chunks=True
-                )
+                # fallback: store as vlen string (or raise an error)
+                vlen_dtype = h5py.vlen_dtype(str)
 
-            # (C) Write data in chunks
-            current_index = 0
-            for arr in arrays:
-                arr_len = arr.shape[0]
-                chunk_size = 10_000  # adjust as needed for memory usage
-                for start_idx in range(0, arr_len, chunk_size):
-                    end_idx = min(start_idx + chunk_size, arr_len)
-                    chunk_data = arr[start_idx:end_idx]
+            dset = f_out.create_dataset(
+                k,
+                shape=(total_length,),
+                dtype=vlen_dtype
+            )
 
-                    # If object dtype, JSON-serialize each element
-                    if is_object_dtype:
-                        converted_list = []
-                        for item in chunk_data:
-                            # Use the custom NumpyEncoder to handle arrays + bytes
-                            converted_list.append(json.dumps(item, cls=NumpyEncoder))
-                        # Convert to a NumPy array of object (string)
-                        chunk_data = np.array(converted_list, dtype=object)
-
-                    # Write chunk to output
-                    out_dset[current_index:current_index + (end_idx - start_idx)] = chunk_data
-                    current_index += (end_idx - start_idx)
+            # 3) Chunked writing (to avoid big concatenations):
+            idx = 0
+            for arr in list_of_arrays:
+                n = arr.shape[0]
+                for i in range(n):
+                    dset[idx] = arr[i]  # store the sub-array (or string) as vlen
+                    idx += 1
 
     print(f"Finished creating {output_h5}.\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="Combine train/val/test HDF5 files across multiple datasets (chunk-based).")
-    parser.add_argument("--input-dirs", nargs='+', required=True,
-                        help="List of directories that each contain train.h5, val.h5, and test.h5.")
-    parser.add_argument("--output-dir", required=True,
-                        help="Directory to store the combined train.h5, val.h5, and test.h5.")
-    parser.add_argument("--splits", nargs='+', required=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-dirs", nargs='+', required=True)
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--splits", nargs='+', default=["train", "val", "test"])
     args = parser.parse_args()
 
-    # Ensure output directory exists
     os.makedirs(args.output_dir, exist_ok=True)
-    
-    # For each split, gather the existing HDF5 files from each input directory
+
     for split in args.splits:
         h5_files = []
-        print(f"\nLooking for {split}.h5 in provided directories...")
-        for in_dir in args.input_dirs:
-            candidate = os.path.join(in_dir, f"{split}.h5")
+        for d in args.input_dirs:
+            candidate = os.path.join(d, f"{split}.h5")
             if os.path.isfile(candidate):
-                print(f"  Found {candidate}")
                 h5_files.append(candidate)
-            else:
-                print(f"  Warning: Did not find {candidate}")
+        if not h5_files:
+            continue
 
         output_h5 = os.path.join(args.output_dir, f"{split}.h5")
         combine_h5_files(h5_files, output_h5)
 
-    print("Done combining HDF5 files across the specified directories.")
+    print("All done!")
 
 if __name__ == "__main__":
     main()
