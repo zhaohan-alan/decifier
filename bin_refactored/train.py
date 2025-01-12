@@ -314,10 +314,9 @@ if __name__ == "__main__":
         # Update checkpoint
         for key in ['train_losses', 'val_losses', 'epochs']:
             if key in checkpoint['training_metrics']:
-                checkpoint['training_metrics'][key] = checkpoint['training_metrics'][key]
+                training_metrics[key] = checkpoint['training_metrics'][key]
                 print(f"Loaded {key}.")
             else:
-                checkpoint['training_metrics'][key] = []
                 print(f"Could not find {key}, creating empty list")
 
         training_metrics['iteration_number'] = checkpoint["training_metrics"]["iteration_number"]
