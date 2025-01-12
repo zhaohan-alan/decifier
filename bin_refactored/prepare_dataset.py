@@ -16,7 +16,6 @@ from pymatgen.analysis.diffraction.xrd import XRDCalculator
 from pymatgen.core import Composition
 from typing import List, Optional
 
-# Pymatgen version changes...
 try:
     parser_from_string = CifParser.from_str
 except:
