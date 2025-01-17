@@ -119,39 +119,43 @@ def process_cif(
 
     # Post-process each generated CIF
     for tokens in token_ids:
-        out_cif = decode_fn(list(tokens))
-        out_cif = replace_symmetry_loop_with_P1(out_cif)
-        spacegroup_symbol = extract_space_group_symbol(out_cif)
-        if spacegroup_symbol != "P 1":
-            out_cif = reinstate_symmetry_loop(out_cif, spacegroup_symbol)
+        try:
+            out_cif = decode_fn(list(tokens))
+            out_cif = replace_symmetry_loop_with_P1(out_cif)
+            spacegroup_symbol = extract_space_group_symbol(out_cif)
+            if spacegroup_symbol != "P 1":
+                out_cif = reinstate_symmetry_loop(out_cif, spacegroup_symbol)
 
-        spacegroup_number_gen = space_group_symbol_to_number(spacegroup_symbol) 
-        crystal_system_gen = space_group_to_crystal_system(spacegroup_number_gen)
-        a_gen = extract_numeric_property(out_cif, "_cell_length_a")
-        b_gen = extract_numeric_property(out_cif, "_cell_length_b")
-        c_gen = extract_numeric_property(out_cif, "_cell_length_c")
-        alpha_gen = extract_numeric_property(out_cif, "_cell_angle_alpha")
-        beta_gen = extract_numeric_property(out_cif, "_cell_angle_beta")
-        gamma_gen = extract_numeric_property(out_cif, "_cell_angle_gamma")
+            spacegroup_number_gen = space_group_symbol_to_number(spacegroup_symbol) 
+            crystal_system_gen = space_group_to_crystal_system(spacegroup_number_gen)
+            a_gen = extract_numeric_property(out_cif, "_cell_length_a")
+            b_gen = extract_numeric_property(out_cif, "_cell_length_b")
+            c_gen = extract_numeric_property(out_cif, "_cell_length_c")
+            alpha_gen = extract_numeric_property(out_cif, "_cell_angle_alpha")
+            beta_gen = extract_numeric_property(out_cif, "_cell_angle_beta")
+            gamma_gen = extract_numeric_property(out_cif, "_cell_angle_gamma")
 
-        # Generate XRD from generated CIF
-        xrd_gen = generate_continuous_xrd_from_cif(
-            out_cif,
-            qmin=qmin,
-            qmax=qmax,
-            qstep=qstep,
-            fwhm_range=fwhm_range,
-            noise_range=noise_range,
-            mask_prob=None,
-            intensity_scale_range=None,
-        )
-        iq_gen = xrd_gen["iq"]
+            # Generate XRD from generated CIF
+            xrd_gen = generate_continuous_xrd_from_cif(
+                out_cif,
+                qmin=qmin,
+                qmax=qmax,
+                qstep=qstep,
+                fwhm_range=fwhm_range,
+                noise_range=noise_range,
+                mask_prob=None,
+                intensity_scale_range=None,
+            )
+            iq_gen = xrd_gen["iq"]
 
-        # Calculate Rwp
-        rwp_value = rwp(iq.cpu().numpy(), iq_gen)
+            # Calculate Rwp
+            rwp_value = rwp(iq.cpu().numpy(), iq_gen)
 
-        # StructureMatcher RMSD
-        cif_rmsd = get_rmsd(cif_sample, out_cif, matcher)
+            # StructureMatcher RMSD
+            cif_rmsd = get_rmsd(cif_sample, out_cif, matcher)
+        except Exception as e:
+            print(e)
+            continue
 
         # Store results
         results["cif_name"].append(cif_name)
@@ -167,7 +171,7 @@ def process_cif(
         results["beta_gen"].append(beta_gen)
         results["gamma_gen"].append(gamma_gen)
 
-        results["cif_string_sample"].append(out_cif)
+        results["cif_string_sample"].append(cif_sample)
         results["spacegroup_sample"].append(spacegroup_number_sample)
         results["crystal_system_sample"].append(crystal_system_sample)
         results["a_sample"].append(a_sample)
@@ -338,6 +342,7 @@ def main():
     # save_structures(results, output_folder)
     #
     # # Also save as pickle (faster load in notebooks)
+    os.makedirs(output_folder, exist_ok=True)
     pkl_path = os.path.join(output_folder, "results.pkl")
     print(f"Saving pickled results to {pkl_path}...")
     with open(pkl_path, "wb") as f:
