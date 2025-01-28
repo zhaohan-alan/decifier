@@ -331,11 +331,11 @@ def xrd_worker(args):
 
         # Init calculator object and calculate XRD pattern
         xrd_calc = XRDCalculator(wavelength=task_dict['wavelength'])
-        if task_dict['qmax'] >= ((4 * np.pi) / xrd_calc.wavelength) * np.sin(np.radians(180)):
+        if task_dict['qmax'] >= ((4 * np.pi) / xrd_calc.wavelength) * np.sin(np.radians(180/2)):
             two_theta_range = None
         else:
-            tth_min = 2 * np.arcsin((task_dict['qmin'] * xrd_calc.wavelength) / (4 * np.pi))
-            tth_max = 2 * np.arcsin((task_dict['qmax'] * xrd_calc.wavelength) / (4 * np.pi))
+            tth_min = np.degrees(2 * np.arcsin((task_dict['qmin'] * xrd_calc.wavelength) / (4 * np.pi)))
+            tth_max = np.degrees(2 * np.arcsin((task_dict['qmax'] * xrd_calc.wavelength) / (4 * np.pi)))
             two_theta_range = (tth_min, tth_max)
         xrd_pattern = xrd_calc.get_pattern(structure, two_theta_range=two_theta_range)
 
