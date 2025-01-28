@@ -8,7 +8,7 @@ CrystaLLM: https://github.com/lantunes/CrystaLLM/blob/main/crystallm/_model.py (
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 from h5py._hl.files import sys
 from tqdm.auto import tqdm
 
@@ -82,7 +82,7 @@ class CausalSelfAttention(nn.Module):
         # Masked attention
         self.masked_bias = torch.tensor(-1e4)
 
-    def forward(self, x: torch.Tensor, attention_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attention_bias: Optional[torch.Tensor] = None, return_attn: bool = False) -> torch.Tensor:
         """
         Applies causal self-attention to the given tensor,
         with a mask to prevent attention to future positions.
@@ -99,7 +99,7 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
 
         #causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
+        if self.flash and not return_attn:
             if attention_bias is not None:
                 # Expand attention_bias to match the number of heads
                 attention_bias = attention_bias.unsqueeze(1) # Shape (B, 1, T, T)
@@ -123,9 +123,11 @@ class CausalSelfAttention(nn.Module):
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
-
         y = self.resid_dropout(self.c_proj(y))
-        return y
+        if not return_attn:
+            return y
+        else:
+            return y, att
 
 def gelu(x: torch.Tensor) -> torch.Tensor:
     """
@@ -165,7 +167,7 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x: torch.Tensor, attention_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attention_bias: Optional[torch.Tensor] = None, return_attn: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor]]:
         """
         Forward pass for the Transformer Block module. A Block module includes causal self-attention,
         layer normalization, and MLP, and residual connections.
@@ -173,9 +175,15 @@ class Block(nn.Module):
         :param x: input to the transformer block
         :returns: output of the transformer block, with the same shape as in the input
         """
-        x = x + self.attn(self.ln_1(x), attention_bias)
-        x = x + self.mlp(self.ln_2(x))
-        return x
+        if not return_attn:
+            x = x + self.attn(self.ln_1(x), attention_bias)
+            x = x + self.mlp(self.ln_2(x))
+            return x
+        else:
+            y, att = self.attn(self.ln_1(x), attention_bias, return_attn=return_attn)
+            x = x + y
+            x = x + self.mlp(self.ln_2(x))
+            return x, att
 
 class Decifer(nn.Module):
 
@@ -206,7 +214,7 @@ class Decifer(nn.Module):
         elif config.use_old_model_format:
             # MLP to embedding size
             cond_embedding = nn.Sequential(
-                nn.Linear(config.cond_size, config.cond_hidden_size),
+                nn.Linear(config.condition_size, config.cond_hidden_size),
                 nn.ReLU(),
                 *[
                     nn.Sequential(nn.Linear(config.cond_hidden_size, config.cond_hidden_size), nn.ReLU())
@@ -236,23 +244,35 @@ class Decifer(nn.Module):
             if pn.endswith("c_proj.weight"):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
-        print("number of total parameters: %.2fM" % (self.get_num_params()/1e6,))
+        print("number of total non-trainable parameters: %.2fM" % (self.get_num_params()/1e6,))
+        print("number of total trainable parameters: %.2fM" % (self.get_num_params(trainable=True)/1e6,))
+        if self.config.condition:
+            print("number of total conditioning MLP parameters: %.2fM" % (self.get_num_params(return_cond_mlp=True)/1e6,))
 
-    def get_num_params(self, non_embedding: bool = True, trainable: bool = False) -> int:
+    def get_num_params(self, non_embedding: bool = True, trainable: bool = False, return_cond_mlp: bool = False) -> int:
         """
         Return the number of parameters in the model. Subtract the position embeddings
         by default. The token embeddings are always included, since they are used in the
         final layer due to weight tying.
 
         :param non_embedding: whether to subtract the position embeddings (default is True)
+        :param trainable: whether to return trainable parameters that requires_grad
+        :param return_cond_mlp: return only conditional mlp.
         :returns: the number of parameters in the model
         """
+        if return_cond_mlp:
+            assert self.config.condition == True
+            parameters = self.transformer.cond_embedding.parameters()
+        else:
+            parameters = self.parameters()
+
         if not trainable:
-            n_params = sum(p.numel() for p in self.parameters())
-            if non_embedding:
+            n_params = sum(p.numel() for p in parameters)
+            if non_embedding and not return_cond_mlp:
                 n_params -= self.transformer.wpe.weight.numel()
         else:
-            n_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+            n_params = sum(p.numel() for p in parameters if p.requires_grad)
+
         return n_params
 
     def _init_weights(self, module):
@@ -388,8 +408,6 @@ class Decifer(nn.Module):
                     fig.savefig(f'attention_mask_{i}.pdf')
                     plt.close(fig)
 
-                sys.exit()
-
             # Adjust targets if provided
             if targets is not None:
                 # Gather indices where index_map >= 0
@@ -445,15 +463,17 @@ class Decifer(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
 
         # Forward pass through transformer blocks
-        for block in self.transformer.h:
-            x = block(x, attention_bias=attention_bias)
+        self.attn_scores = []
+        for i, block in enumerate(self.transformer.h):
+            x, att = block(x, attention_bias=attention_bias, return_attn=True)
+            self.attn_scores.append(att.detach().cpu().mean(dim=1))
 
         x = self.transformer.ln_f(x)
-        with torch.no_grad():
-            #self.attn_scores = np.linalg.norm(x.squeeze(0).cpu().numpy(), axis=-1)
-            #self.attn_scores = np.median(x.squeeze(0).cpu().numpy(), axis=-1)
-            self.attn_scores = np.mean(x.squeeze(0).cpu().numpy(), axis=-1)
-            self.attn_scores /= np.linalg.norm(self.attn_scores)
+        # with torch.no_grad():
+        #     self.attn_scores = np.linalg.norm(x.squeeze(0).cpu().numpy(), axis=-1)
+        #     #self.attn_scores = np.median(x.squeeze(0).cpu().numpy(), axis=-1)
+        #     #self.attn_scores = np.mean(x.squeeze(0).cpu().numpy(), axis=-1)
+        #     #self.attn_scores /= np.linalg.norm(self.attn_scores)
 
         if targets is not None:
             logits = self.lm_head(x)

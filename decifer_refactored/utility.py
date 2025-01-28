@@ -49,7 +49,7 @@ def space_group_to_crystal_system(space_group):
         elif 195 <= space_group <= 230:
             return 7  # Cubic
         else:
-            # print(f"Invalid space group: {space_group}")
+            print(f"Invalid space group: {space_group}")
             return 0
     except:
         return 0
@@ -233,12 +233,14 @@ def generate_continuous_xrd_from_cif(
         xrd_calculator = XRDCalculator(wavelength=wavelength)
         
         # Calculate the XRD pattern from the structure
-        if qmax >= (((4 * np.pi) / xrd_calculator.wavelength) * np.sin(np.radians(180))):
+        max_q = ((4 * np.pi) / xrd_calculator.wavelength) * np.sin(np.radians(180/2))
+        if qmax >= max_q:
             two_theta_range = None
         else:
-            tth_min = 2 * np.arcsin((qmin * xrd_calculator.wavelength) / (4 * np.pi))
-            tth_max = 2 * np.arcsin((qmax * xrd_calculator.wavelength) / (4 * np.pi))
+            tth_min = np.degrees(2 * np.arcsin((qmin * xrd_calculator.wavelength) / (4 * np.pi)))
+            tth_max = np.degrees(2 * np.arcsin((qmax * xrd_calculator.wavelength) / (4 * np.pi)))
             two_theta_range = (tth_min, tth_max)
+        two_theta_range = (np.degrees(2 * np.arcsin((qmin * xrd_calculator.wavelength) / (4 * np.pi))), np.degrees(2 * np.arcsin((qmax * xrd_calculator.wavelength) / (4 * np.pi))))
         xrd_pattern = xrd_calculator.get_pattern(structure, two_theta_range=two_theta_range)
     
     except Exception as e:
