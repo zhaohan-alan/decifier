@@ -1,37 +1,36 @@
+#!/usr/bin/env python3
+
 import os
 import gc
+import h5py
+import gzip
+import json
 import pickle
 import argparse
+import numpy as np
+from tqdm import tqdm
+from glob import glob
+
 from pymatgen.io.cif import CifWriter, Structure, CifParser
+from pymatgen.analysis.diffraction.xrd import XRDCalculator
 from pymatgen.core import Composition
 from typing import List, Optional
-from dscribe.descriptors import SOAP, ACSF
 
 try:
     parser_from_string = CifParser.from_str
 except:
     parser_from_string = CifParser.from_string
 
-from pymatgen.analysis.diffraction.xrd import XRDCalculator
 from sklearn.model_selection import train_test_split
-from tqdm import tqdm
-from glob import glob
+
 import multiprocessing as mp
 from multiprocessing import Pool, cpu_count, TimeoutError
-import numpy as np
-import torch
-
-import h5py
-import gzip
-import json
 
 import logging
 from logging import handlers
 
 from decifer.tokenizer import Tokenizer
-from decifer.cl_model import CLEncoder
 from decifer.utility import (
-    disc_to_cont_xrd,
     replace_symmetry_loop_with_P1,
     remove_cif_header,
     remove_oxidation_loop,
@@ -47,12 +46,11 @@ from decifer.utility import (
 import warnings
 warnings.filterwarnings("ignore")
 
-def init_worker(log_queue=None, model_path=None, device='cpu'):
+def init_worker(log_queue=None):
     """
     Initializes each worker process with a queue-based logger and loads the model if provided.
     This will be called when each worker starts.
     """
-    global xrd_encoder
 
     # Initialize logger
     if log_queue:
@@ -63,29 +61,6 @@ def init_worker(log_queue=None, model_path=None, device='cpu'):
     else:
         logger = logging.getLogger()
         logger.setLevel(logging.ERROR)
-
-    if model_path:
-        # Load the model
-        checkpoint = torch.load(model_path, map_location=device)
-        model_args = checkpoint['model_args']
-
-        # Initialize the encoder model with the model args from checkpoint
-        xrd_encoder = CLEncoder(
-            embedding_dim=model_args["embedding_dim"],
-            proj_dim=model_args["proj_dim"],
-            qmin=model_args["qmin"],
-            qmax=model_args["qmax"],
-            qstep=model_args["qstep"],
-            fwhm_range=model_args["fwhm_range"],
-            noise_range=model_args["noise_range"],
-            intensity_scale_range=model_args["intensity_scale_range"],
-            mask_prob=model_args["mask_prob"]
-        )
-
-        # Load model state dict
-        xrd_encoder.load_state_dict(checkpoint["model"])
-        xrd_encoder.to(device)
-        xrd_encoder.eval()
 
 def log_listener(queue, log_dir):
     """
@@ -167,7 +142,7 @@ def run_subtasks(
     announcement: Optional[str] = None,
     debug: bool = False,
     debug_max: Optional[int] = None,
-    workers: int = cpu_count() - 1,
+    num_workers: int = cpu_count() - 1,
     from_gzip: bool = False,
 ):
     if announcement:
@@ -238,45 +213,24 @@ def run_subtasks(
         log_queue = mp.Queue()
         listener = log_listener(log_queue, to_dir)
 
-        if worker_function == cl_emb_worker:
-            # Load the model once
-            model_path = task_kwargs_dict['model_path']
-            device = task_kwargs_dict.get('device', 'cpu')
-            init_worker(log_queue, model_path, device)
+        # Parallel processing of CIF files using multiprocessing
+        with Pool(processes=num_workers, initializer=init_worker, initargs=(log_queue,)) as pool:
+            results_iterator = pool.imap_unordered(worker_function, tasks)
 
-            # Process tasks sequentially
-            for task in tqdm(tasks, desc="Executing tasks...", leave=False):
+            for _ in tqdm(range(len(tasks)), total=len(tasks), desc="Executing tasks...", leave=False):
                 try:
-                    worker_function(task)
-                except Exception as e:
-                    if debug:
-                        print(f"Error processing task {task}: {e}")
-                    logger = logging.getLogger()
-                    logger.exception(f"Exception in worker function for task {task}, error:\n {e}\n\n")
+                    results_iterator.next(timeout=60)
+                except TimeoutError:
+                    print("Process timed out.")
                     continue
 
-            # Stop log listener and flush
-            listener.stop()
-            logging.shutdown()
-        else:
-            # Original code for other worker functions
-            # Parallel processing of CIF files using multiprocessing
-            with Pool(processes=workers, initializer=init_worker, initargs=(log_queue,)) as pool:
-                results_iterator = pool.imap_unordered(worker_function, tasks)
-
-                for _ in tqdm(range(len(tasks)), total=len(tasks), desc="Executing tasks...", leave=False):
-                    try:
-                        results_iterator.next(timeout=60)
-                    except TimeoutError as e:
-                        continue
-
-            # Stop log listener and flush
-            listener.stop()
-            logging.shutdown()
+        # Stop log listener and flush
+        listener.stop()
+        logging.shutdown()
 
     n_files = len(paths)
     n_successful_files = len(glob(os.path.join(to_dir, '*.pkl.gz')))
-    print(f"Reduction in dataset: {n_files} samples --> {n_successful_files} samples")
+    print(f"Reduction in dataset: {n_files} --> {n_successful_files} samples")
 
     additional_metadata = {save_to: task_kwargs_dict}
     save_metadata(additional_metadata, root)
@@ -289,20 +243,27 @@ def preprocess_worker(args):
     
     # Extract arguments
     obj, task_dict, debug, to_dir = args
+    cif_name = "Unknown"
 
     try:
         # Make structure
         if isinstance(obj, str): # Path
             cif_name = os.path.basename(obj)
-            structure = Structure.from_file(obj)
+            try:
+                structure = Structure.from_file(obj)
+            except:
+                raise Exception("Unexpected format found in preprocessing step of {obj} of type str")
         elif isinstance(obj, tuple): # cif string from pkl
             cif_name, cif_string = obj
-            structure = parser_from_string(cif_string).get_structures()[0]
+            try:
+                structure = parser_from_string(cif_string).get_structures()[0]
+            except:
+                raise Exception("Unexpected format found in preprocessing step of {obj} of type tuple")
         else:
-            raise Exception("Unexpected format found in preprocessing step of {obj}")
+            raise Exception("Unexpected type found in preprocessing step of {obj}")
         
         # Option for removing structures with occupancies below 1
-        if task_dict['remove_occ_less_than_one']:
+        if not task_dict['include_occupancy_structures']:
             for site in structure:
                 occ = list(site.species.as_dict().values())[0]
                 if occ < 1:
@@ -323,8 +284,8 @@ def preprocess_worker(args):
         cif_string = remove_oxidation_loop(cif_string)
 
         # Number precision rounding
-        cif_string = round_numbers(cif_string, task_dict['decimal_places'])
-        cif_string = format_occupancies(cif_string, task_dict['decimal_places'])
+        cif_string = round_numbers(cif_string, task_dict['num_decimal_places'])
+        cif_string = format_occupancies(cif_string, task_dict['num_decimal_places'])
 
         # Add atomic props block
         cif_string = add_atomic_props_block(cif_string)
@@ -353,66 +314,7 @@ def preprocess_worker(args):
         logger = logging.getLogger()
         logger.exception(f"Exception in worker function pre-processing CIF {cif_name}, with error:\n {e}\n\n")
         
-        # Append the file name the failed_files manager list
-        #failed_files.append(cif_name)
-
-def descriptor_worker(args):
-
-    # Extract arguments
-    from_path, task_dict, debug, to_dir = args
-    
-    # Open pkl and extract
-    with gzip.open(from_path, "rb") as f:
-        data = pickle.load(f)
-    cif_name = data['cif_name']
-    cif_string = data['cif_string']
-    
-    # Get species
-    species = task_dict['species']
-
-    try:
-        # Load structure and parse to ASE
-        ase_structure = parser_from_string(cif_string).get_structures()[0].to_ase_atoms()
-
-        # Setup SOAP object
-        soap = SOAP(
-            species = species,
-            r_cut = task_dict['soap']['r_cut'],
-            n_max = task_dict['soap']['n_max'],
-            l_max = task_dict['soap']['l_max'],
-            sigma = task_dict['soap']['sigma'],
-            rbf = task_dict['soap']['rbf'],
-            compression = {
-                'mode': task_dict['soap']['compression_mode'],
-                'weighting': None,
-            },
-            periodic = task_dict['soap']['periodic'],
-            sparse = task_dict['soap']['sparse'],
-        )
-
-        # Setup ACSF
-        acsf = ACSF(
-            species = species,
-            r_cut = task_dict['acsf']['r_cut'],
-            periodic = task_dict['acsf']['periodic'],
-            sparse = task_dict['acsf']['sparse'],
-        )
-
-        # Calculate descriptors and save to pkl.gz
-        output_dict = {
-            'soap': soap.create(ase_structure, centers=[0])[0],
-            'acsf': acsf.create(ase_structure, centers=[0])[0],
-        }
-        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
-        safe_pkl_gz(output_dict, output_path)
-
-    except Exception as e:
-        if debug:
-            print(f"Error processing {cif_name}: {e}")
-        logger = logging.getLogger()
-        logger.exception(f"Exception in worker function calculating descriptors for CIF {cif_name}, with error:\n {e}\n\n")
-
-def xrd_disc_worker(args):
+def xrd_worker(args):
 
     # Extract arguments
     from_path, task_dict, debug, to_dir = args
@@ -429,11 +331,11 @@ def xrd_disc_worker(args):
 
         # Init calculator object and calculate XRD pattern
         xrd_calc = XRDCalculator(wavelength=task_dict['wavelength'])
-        if task_dict['qmax'] >= ((4 * np.pi) / xrd_calc.wavelength) * np.sin(np.radians(180)):
+        if task_dict['qmax'] >= ((4 * np.pi) / xrd_calc.wavelength) * np.sin(np.radians(180/2)):
             two_theta_range = None
         else:
-            tth_min = 2 * np.arcsin((task_dict['qmin'] * xrd_calc.wavelength) / (4 * np.pi))
-            tth_max = 2 * np.arcsin((task_dict['qmax'] * xrd_calc.wavelength) / (4 * np.pi))
+            tth_min = np.degrees(2 * np.arcsin((task_dict['qmin'] * xrd_calc.wavelength) / (4 * np.pi)))
+            tth_max = np.degrees(2 * np.arcsin((task_dict['qmax'] * xrd_calc.wavelength) / (4 * np.pi)))
             two_theta_range = (tth_min, tth_max)
         xrd_pattern = xrd_calc.get_pattern(structure, two_theta_range=two_theta_range)
 
@@ -444,7 +346,7 @@ def xrd_disc_worker(args):
 
         output_dict = {
             'cif_name': cif_name,
-            'xrd_disc': {
+            'xrd': {
                 'q': q_disc,
                 'iq': iq_disc,
             },
@@ -459,91 +361,10 @@ def xrd_disc_worker(args):
         logger = logging.getLogger()
         logger.exception(f"Exception in worker function with disc xrd calculation for CIF with name {cif_name}, with error:\n {e}\n\n")
     
-def xrd_cont_worker(args):
-
-    # Extract arguments
-    from_path, task_dict, debug, to_dir = args
-
-    # Open pkl and extract
-    with gzip.open(from_path, "rb") as f:
-        data = pickle.load(f)
-    cif_name = data['cif_name']
-
-    try:
-        xrd_dict = disc_to_cont_xrd(
-            batch_q = task_dict['q_disc'].unsqueeze(0), 
-            batch_iq = task_dict['iq_disc'].unsqueeze(1),
-            qmin = task_dict['qmin'],
-            qmax = task_dict['qmax'],
-            qstep = task_dict['qstep'],
-            fwhm_range = task_dict['fwhm_range'],
-            eta_range = task_dict['eta_range'],
-            noise_range = task_dict['noise_range'],
-            intensity_scale_range = None,
-            mask_prob = None,
-        )
-
-        # Save output to pkl.gz file
-        output_dict = {
-            'cif_name': cif_name,
-            'xrd_cont': xrd_dict,
-        }
-        
-        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
-        safe_pkl_gz(output_dict, output_path)
-
-    except Exception as e:
-        if debug:
-            print(f"Error processing {cif_name}: {e}")
-        logger = logging.getLogger()
-        logger.exception(f"Exception in worker function with cont xrd calculation for CIF with name {cif_name}, with error:\n {e}\n\n")
-
-def cl_emb_worker(args):
-
-    # Extract arguments
-    from_path, task_dict, debug, to_dir = args
-
-    # Open pkl and extract the discrete XRD patterns
-    with gzip.open(from_path, "rb") as f:
-        data = pickle.load(f)
-    cif_name = data['cif_name']
-    xrd_disc_q = data['xrd_disc']['q']
-    xrd_disc_iq = data['xrd_disc']['iq']
-
-    try:
-        # Access the global model
-        global xrd_encoder
-        device = task_dict.get('device', 'cpu')
-
-        # Prepare data
-        batch_q = [xrd_disc_q]
-        batch_iq = [xrd_disc_iq]
-
-        data_input = (batch_q, batch_iq)
-
-        # Generate embeddings
-        with torch.no_grad():
-            h, _ = xrd_encoder(data_input, train=False)
-            h = h.cpu().numpy()
-
-        # Save output to pkl.gz file
-        output_dict = {
-            'cif_name': cif_name,
-            'xrd_cl_emb': h[0],  # h is of shape (1, embedding_dim)
-        }
-        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
-        safe_pkl_gz(output_dict, output_path)
-
-    except Exception as e:
-        if debug:
-            print(f"Error processing {cif_name}: {e}")
-        logger = logging.getLogger()
-        logger.exception(f"Exception in worker function with CL embedding for CIF {cif_name}, error:\n {e}\n\n")
-
 def cif_tokenizer_worker(args):
     
     # Extract arguments
-    from_path, task_dict, debug, to_dir = args
+    from_path, _, debug, to_dir = args
 
     # Open pkl and extract
     with gzip.open(from_path, "rb") as f:
@@ -562,46 +383,11 @@ def cif_tokenizer_worker(args):
         tokenize = tokenizer.tokenize_cif
         encode = tokenizer.encode
 
-        cif_tokenized = encode(tokenize(cif_string_nosym))
+        cif_tokens = encode(tokenize(cif_string_nosym))
     
         # Save output to pickle file
         output_dict = {
-            'cif_tokenized': cif_tokenized,
-        }
-        output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
-        safe_pkl_gz(output_dict, output_path)
-
-    except Exception as e:
-        if debug:
-            print(f"Error processing {cif_name}: {e}")
-        logger = logging.getLogger()
-        logger.exception(f"Exception in worker function with tokenization for CIF with name {cif_name}, with error:\n {e}\n\n")
-
-def xrd_tokenizer_worker(args):
-    
-    # Extract arguments
-    from_path, task_dict, debug, to_dir = args
-
-    # Open pkl and extract
-    with gzip.open(from_path, "rb") as f:
-        data = pickle.load(f)
-    cif_name = data['cif_name']
-    xrd_disc = data['xrd_disc']
-
-    try:
-        # Convert discrete xrd to string
-        xrd_disc_str = "\n".join([f"{x:5.4f}, {y:5.4f}" for (x,y) in zip(xrd_disc['q'], xrd_disc['iq'])])
-
-        # Initialise Tokenizer
-        tokenizer = Tokenizer()
-        tokenize = tokenizer.tokenize_cif
-        encode = tokenizer.encode
-
-        xrd_tokenized = encode(tokenize(xrd_disc_str))
-    
-        # Save output to pickle file
-        output_dict = {
-            'xrd_tokenized': xrd_tokenized,
+            'cif_tokens': cif_tokens,
         }
         output_path = os.path.join(to_dir, cif_name + '.pkl.gz')
         safe_pkl_gz(output_dict, output_path)
@@ -766,7 +552,7 @@ def save_h5(h5_path, cif_names, data_types):
                         raise TypeError(f"Unsupported data type for key '{data_key}': {type(data_value)}")
             current_size += 1
 
-def serialize(root, workers, seed):
+def serialize(root, num_workers, seed, ignore_data_split=False):
 
     # Locate available data TODO make this automatic based on folder names etc.
     pre_dir = os.path.join(root, "preprocessed")
@@ -779,67 +565,51 @@ def serialize(root, workers, seed):
     os.makedirs(ser_dir, exist_ok=True)
     
     # Retrieve all cif names and stratification keys
-    with Pool(processes=workers) as pool:
+    with Pool(processes=num_workers) as pool:
         results = list(tqdm(pool.imap(name_and_strat, pre_paths), total=len(pre_paths), desc="Retrieving names and stratification keys", leave=False))
 
     # Seperate cif neams and stratification keys
-    cif_names = [item[0] for item in results]
-    strat_keys = [item[1] for item in results]
+    cif_names = [item[0] for item in results if item is not None]
+    strat_keys = [item[1] for item in results if item is not None]
     
-    # Create data splits
-    train_size = int(0.9 * dataset_size)
-    val_size = int(0.075 * dataset_size)
-    test_size = dataset_size - train_size - val_size
-
-    print("Train size:", train_size)
-    print("Val size:", val_size)
-    print("Test size:", test_size)
-
-    cif_names_temp, cif_names_test, strat_keys_temp, _ = train_test_split(
-        cif_names, strat_keys, test_size = test_size, stratify = strat_keys, random_state = seed,
-    )
-    cif_names_train, cif_names_val = train_test_split(
-        cif_names_temp, test_size = test_size, stratify = strat_keys_temp, random_state = seed,
-    )
-
     # Data types
     data_types = []
 
     # Preprocessed
     data_types.append({'dir': pre_dir, 'keys': ['cif_name', 'cif_string', 'strat_key', 'species', 'spacegroup']})
     
-    desc_dir = os.path.join(root, "descriptors")
-    desc_paths = glob(os.path.join(desc_dir, "*.pkl.gz"))
-    if len(desc_paths) > 0:
-        data_types.append({'dir': desc_dir, 'keys': ['soap', 'acsf']})
+    xrd_dir = os.path.join(root, "xrd")
+    xrd_paths = glob(os.path.join(xrd_dir, "*.pkl.gz"))
+    if len(xrd_paths) > 0:
+        data_types.append({'dir': xrd_dir, 'keys': ['xrd']})
 
-    xrd_disc_dir = os.path.join(root, "xrd_disc")
-    xrd_disc_paths = glob(os.path.join(xrd_disc_dir, "*.pkl.gz"))
-    if len(xrd_disc_paths) > 0:
-        data_types.append({'dir': xrd_disc_dir, 'keys': ['xrd_disc']})
-
-    xrd_cont_dir = os.path.join(root, "xrd_cont")
-    xrd_cont_paths = glob(os.path.join(xrd_cont_dir, "*.pkl.gz"))
-    if len(xrd_cont_paths) > 0:
-        data_types.append({'dir': xrd_cont_dir, 'keys': ['xrd_cont']})
-    
-    cl_dir = os.path.join(root, "cl_embeddings")
-    cl_paths = glob(os.path.join(cl_dir, "*.pkl.gz"))
-    if len(cl_paths) > 0:
-        data_types.append({'dir': cl_dir, 'keys': ['xrd_cl_emb']})
-
-    cif_token_dir = os.path.join(root, "cif_tokenized")
+    cif_token_dir = os.path.join(root, "cif_tokens")
     cif_token_paths = glob(os.path.join(cif_token_dir, "*.pkl.gz"))
     if len(cif_token_paths) > 0:
-        data_types.append({'dir': cif_token_dir, 'keys': ['cif_tokenized']})
+        data_types.append({'dir': cif_token_dir, 'keys': ['cif_tokens']})
+    
+    # Create data splits
+    if not ignore_data_split:
+        train_size = int(0.9 * dataset_size)
+        val_size = int(0.075 * dataset_size)
+        test_size = dataset_size - train_size - val_size
 
-    xrd_token_dir = os.path.join(root, "xrd_tokenized")
-    xrd_token_paths = glob(os.path.join(xrd_token_dir, "*.pkl.gz"))
-    if len(xrd_token_paths) > 0:
-        data_types.append({'dir': xrd_token_dir, 'keys': ['xrd_tokenized']})
+        print("Train size:", train_size)
+        print("Val size:", val_size)
+        print("Test size:", test_size)
 
-    for cif_names, split_name in zip([cif_names_train, cif_names_val, cif_names_test], ['train', 'val', 'test']):
-        h5_path = os.path.join(ser_dir, f'{split_name}.h5')
+        cif_names_temp, cif_names_test, strat_keys_temp, _ = train_test_split(
+            cif_names, strat_keys, test_size = test_size, stratify = strat_keys, random_state = seed,
+        )
+        cif_names_train, cif_names_val = train_test_split(
+            cif_names_temp, test_size = test_size, stratify = strat_keys_temp, random_state = seed,
+        )
+    
+        for cif_names, split_name in zip([cif_names_train, cif_names_val, cif_names_test], ['train', 'val', 'test']):
+            h5_path = os.path.join(ser_dir, f'{split_name}.h5')
+            save_h5(h5_path, cif_names, data_types)
+    else:
+        h5_path = os.path.join(ser_dir, f'test.h5')
         save_h5(h5_path, cif_names, data_types)
 
 def retrieve_worker(args):
@@ -853,18 +623,15 @@ def retrieve_worker(args):
 
     return data
 
-def collect_data(root, get_from, key, workers=cpu_count() - 1):
+def collect_data(root, get_from, key, num_workers=cpu_count() - 1):
 
     # Find paths
     paths = glob(os.path.join(root, get_from, "*.pkl.gz"))
     args = [(path, key) for path in paths] 
 
-    # Define output
-    output = []
-
     # Parallel process retrieving the results
     ctx = mp.get_context('spawn')
-    with ctx.Pool(processes=workers) as pool:
+    with ctx.Pool(processes=num_workers) as pool:
         key_data = list(tqdm(pool.imap(retrieve_worker, args), total=len(paths), desc=f"Retrieving {key} from {get_from}...", leave=False))
         
     return key_data
@@ -878,37 +645,36 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--data-dir", type=str, help="Path to the outer data directory", required=True)
     parser.add_argument("--name", "-n", type=str, help="Name of data preparation", required=True)
-    parser.add_argument("--group-size", type=int, help="Spacegroup group size for stratification", default=10)
-    parser.add_argument("--decimal-places", type=int, help="Number of decimal places for floats in CIF files", default=4)
-    parser.add_argument("--include-occ", help="Include structures with occupancies less than one", action="store_false")
+    parser.add_argument("--strat-group-size", type=int, help="Spacegroup group size for stratification", default=10)
+    parser.add_argument("--num-decimal-places", type=int, help="Number of decimal places for floats in CIF files", default=4)
+    parser.add_argument("--include-occupancy-structures", help="Include structures with occupancies less than unity", action="store_true")
 
     parser.add_argument("--preprocess", help="preprocess files", action="store_true")
-    parser.add_argument("--desc", help="calculate descriptors", action="store_true")  # Placeholder for future implementation
-    parser.add_argument("--xrd-disc", help="calculate discrete XRD", action="store_true")  # Placeholder for future implementation
-    parser.add_argument("--xrd-cont", help="calculate continuous XRD", action="store_true")  # Placeholder for future implementation
-    parser.add_argument("--tokenize-cif", help="tokenize CIFs", action="store_true")  # Placeholder for future implementation
-    parser.add_argument("--tokenize-xrd", help="tokenize XRDs", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--xrd", help="calculate XRD patterns", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--tokenize", help="tokenize CIFs", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--serialize", help="serialize data by hdf5 convertion", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--all", help="process, calculate xrd, tokenize and serialize", action="store_true")
+    parser.add_argument("--ignore-data-split", help='Ignore data splitting and serialize all data into test.h5', action='store_true')
 
     parser.add_argument("--debug-max", help="Debug-feature: max number of files to process", type=int, default=0)
     parser.add_argument("--debug", help="Debug-feature: whether to print debug messages", action="store_true")
-    parser.add_argument("--workers", help="Number of workers for each processing step", type=int, default=0)
+    parser.add_argument("--num-workers", help="Number of workers for each processing step", type=int, default=0)
     parser.add_argument("--raw-from-gzip", help="Whether raw CIFs come packages in gzip pkl", action="store_true")
     parser.add_argument("--save-species-to-metadata", help="Extraordinary save of species to metadata", action="store_true")
 
-    parser.add_argument("--cl-emb", help="Generate contrastive learning embeddings", action="store_true")
-    parser.add_argument("--model-path", type=str, help="Path to the trained model checkpoint for generating embeddings")
-
     args = parser.parse_args()
 
-    # Remove occ
-    args.remove_occ = not args.include_occ
+    if args.all:
+        args.preprocess = True
+        args.xrd = True
+        args.tokenize = True
+        args.serialize = True
 
-    # workers
-    if args.workers == 0:
-        args.workers = cpu_count() - 1
+    # Number of multiprocessing workers
+    if args.num_workers == 0: # Default
+        args.num_workers = cpu_count() - 1
     else:
-        args.workers = min(cpu_count() - 1, args.workers)
+        args.num_workers = min(cpu_count() - 1, args.num_workers)
 
     # Make data prep directory and update data_dir
     args.data_dir = os.path.join(args.data_dir, args.name)
@@ -920,9 +686,9 @@ if __name__ == "__main__":
 
     if args.preprocess:
         preprocess_dict = {
-            'spacegroup_strat_group_size': args.group_size,
-            'decimal_places': args.decimal_places,
-            'remove_occ_less_than_one': args.remove_occ,
+            'spacegroup_strat_group_size': args.strat_group_size,
+            'num_decimal_places': args.num_decimal_places,
+            'include_occupancy_structures': args.include_occupancy_structures,
         }
         run_subtasks(
             root = args.data_dir, 
@@ -932,7 +698,7 @@ if __name__ == "__main__":
             task_kwargs_dict = preprocess_dict,
             announcement = "PREPROCESSING",
             debug = True,
-            workers = args.workers,
+            num_workers = args.num_workers,
             from_gzip = args.raw_from_gzip,
             debug_max = args.debug_max,
         )
@@ -946,6 +712,7 @@ if __name__ == "__main__":
         species = {'species': list(set([item for sublist in species for item in sublist]))}
         save_metadata(species, args.data_dir)
 
+    # If metadata species is not available, extra option for retrieving
     if args.save_species_to_metadata:
         # Save species to metadata
         species = collect_data(
@@ -956,119 +723,37 @@ if __name__ == "__main__":
         species = {'species': list(set([item for sublist in species for item in sublist]))}
         save_metadata(species, args.data_dir)
     
-    if args.desc:
-        descriptor_dict = {
-            'soap': {
-                'r_cut': 6.0,
-                'n_max': 2,
-                'l_max': 5,
-                'sigma': 1.0,
-                'rbf': 'gto',
-                'compression_mode': 'crossover',
-                'periodic': True,
-                'sparse': False,
-            },
-            'acsf': {
-                'r_cut': 6.0,
-                'periodic': True,
-                'sparse': False,
-            },
-        }
-        run_subtasks(
-            root = args.data_dir, 
-            worker_function = descriptor_worker,
-            get_from = "preprocessed",
-            save_to = "descriptors",
-            add_metadata = ["species"],
-            task_kwargs_dict = descriptor_dict,
-            announcement = "DESCRIPTOR CALCULATIONS",
-            debug = True,
-            workers = args.workers,
-        )
-
-    if args.xrd_disc:
+    if args.xrd:
         xrd_dict = {
             'wavelength': 'CuKa',
             'qmin': 0.0,
             'qmax': 10.0,
-            'qstep': 0.01,
         }
         run_subtasks(
             root = args.data_dir, 
-            worker_function = xrd_disc_worker,
+            worker_function = xrd_worker,
             get_from = "preprocessed",
-            save_to = "xrd_disc",
+            save_to = "xrd",
             task_kwargs_dict = xrd_dict,
-            announcement = "XRD DISC CALCULATIONS",
-            debug = True,
-            workers = args.workers,
+            announcement = "CALCULATING XRD",
+            debug = args.debug,
+            num_workers = args.num_workers,
         )
         save_metadata({'xrd': xrd_dict}, args.data_dir)
     
-    if args.xrd_cont:
-        xrd_dict = {
-            'wavelength': 'CuKa',
-            'qmin': 0.0,
-            'qmax': 10.0,
-            'qstep': 0.01,
-            'fwhm_range': (0.05, 0.05),
-            'eta_range': (0.5, 0.5),
-            'noise_range': (0.0, 0.0),
-        }
-        run_subtasks(
-            root = args.data_dir, 
-            worker_function = xrd_cont_worker,
-            get_from = "xrd_disc",
-            save_to = "xrd_cont",
-            task_kwargs_dict = xrd_dict,
-            announcement = "XRD CONT CALCULATIONS",
-            debug = True,
-            workers = args.workers,
-        )
-        save_metadata({'xrd': xrd_dict}, args.data_dir)
-
-    if args.cl_emb:
-        if not args.model_path:
-            parser.error("--model_path is required when --cl_emb is specified.")
-        cl_emb_dict = {
-            'model_path': args.model_path,  # Path to your trained model checkpoint
-            'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        }
-        run_subtasks(
-            root = args.data_dir,
-            worker_function = cl_emb_worker,
-            get_from = "xrd",
-            save_to = "cl_embeddings",
-            task_kwargs_dict = cl_emb_dict,
-            announcement = "GENERATING CL EMBEDDINGS",
-            debug = True,
-            workers = args.workers,
-        )
-
-    if args.tokenize_cif:
+    if args.tokenize:
         run_subtasks(
             root = args.data_dir, 
             worker_function = cif_tokenizer_worker,
             get_from = "preprocessed",
-            save_to = "cif_tokenized",
-            announcement = "TOKENIZING CIFs",
-            debug = True,
-            workers = args.workers,
-        )
-
-    if args.tokenize_xrd:
-        run_subtasks(
-            root = args.data_dir, 
-            worker_function = xrd_tokenizer_worker,
-            get_from = "xrd",
-            save_to = "xrd_tokenized",
-            announcement = "TOKENIZING XRDs",
-            debug = True,
-            workers = args.workers,
+            save_to = "cif_tokens",
+            announcement = "TOKENIZING CIFS",
+            debug = args.debug,
+            num_workers = args.num_workers,
         )
     
     if args.serialize:
-        serialize(args.data_dir, args.workers, args.seed)
+        serialize(args.data_dir, args.num_workers, args.seed, args.ignore_data_split)
 
     # Store all arguments passed to the main function in centralized metadata
     metadata = {

@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
+
 import os
 import argparse
 import h5py
 import numpy as np
 
 def combine_h5_files(h5_files, output_h5):
-    """
-    Combine multiple HDF5 files into a single HDF5 file by:
-      1) Collecting 'object'-type datasets from each file
-      2) Creating a vlen dataset for numeric or string data
-      3) Copying data in chunks
-    This preserves the "array-of-arrays" structure for numeric data 
-    (e.g. xrd.q remains an array of float arrays) and raw bytes/strings 
-    remain string data, instead of JSON-encoded text.
-    """
     if not h5_files:
         print(f"No files to combine for {output_h5}. Skipping.")
         return

@@ -13,11 +13,11 @@ import torch
 from pymatgen.analysis.structure_matcher import StructureMatcher
 
 # decifer/Refactored imports
-from bin_refactored.train import TrainConfig
-from bin_refactored.evaluate import load_model_from_checkpoint, extract_prompt
-from decifer_refactored.tokenizer import Tokenizer
-from decifer_refactored.decifer_dataset import DeciferDataset
-from decifer_refactored.utility import (
+from bin.train import TrainConfig
+from bin.evaluate import load_model_from_checkpoint, extract_prompt
+from decifer.tokenizer import Tokenizer
+from decifer.decifer_dataset import DeciferDataset
+from decifer.utility import (
     extract_numeric_property,
     reinstate_symmetry_loop,
     replace_symmetry_loop_with_P1,

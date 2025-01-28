@@ -1,11 +1,14 @@
+#!/usr/bin/env python3
+
 """
-Adapted from:
-https://github.com/karpathy/nanoGPT/blob/eba36e84649f3c6d840a93092cb779a260544d08/model.py
+Inspired by and adapted from:
+nanoGPT: https://github.com/karpathy/nanoGPT/blob/eba36e84649f3c6d840a93092cb779a260544d08/model.py (MIT License)
+CrystaLLM: https://github.com/lantunes/CrystaLLM/blob/main/crystallm/_model.py
 """
+
 import math
-import time
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple, Union
 from h5py._hl.files import sys
 from tqdm.auto import tqdm
 
@@ -14,44 +17,27 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from decifer.tokenizer import Tokenizer
-from decifer.cl_model import CLEncoder
-
-class LoRALayer(nn.Module):
-    def __init__(self, input_dim, output_dim, rank):
-        super(LoRALayer, self).__init__()
-        self.rank = rank
-        self.A = nn.Parameter(torch.Tensor(input_dim, rank))
-        self.B = nn.Parameter(torch.Tensor(rank, output_dim))
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        nn.init.xavier_uniform_(self.A)
-        nn.init.xavier_uniform_(self.B)
-
-    def forward(self, x):
-        return x @ self.A @ self.B
+TOKENIZER = Tokenizer()
+NEWLINE_ID = TOKENIZER.token_to_id["\n"]
+PADDING_ID = TOKENIZER.padding_id
 
 @dataclass
 class DeciferConfig:
     block_size: int = 1024
     vocab_size: int = 372
-    cond_size: int = 1000
     n_layer: int = 8
     n_head: int = 8
     n_embd: int = 512
     dropout: float = 0.0
     bias: bool = True
-    lora_rank: int = 4
-    use_lora: bool = False
-    lora_mlp: bool = False
-    lora_proj: bool = False
-    condition_with_mlp_emb: bool = False
-    condition_with_cl_emb: bool = False
+    condition: bool = False
     boundary_masking: bool = True
-    cl_model_ckpt: Optional[str] = None
-    cond_hidden_size: int = 512
-    cond_num_hidden_layers: int = 0
-    freeze_condition_embedding: bool = False
+    condition_size: int = 1000
+    condition_embedder_hidden_layers: List[int] = field(default_factory=lambda: [512])
+    plot_attention: bool = False
+    cond_hidden_size: int = 512 # Deprecated
+    cond_num_hidden_layers: int = 0 # Deprecated
+    use_old_model_format: bool = False
 
 class LayerNorm(nn.Module):
 
@@ -90,18 +76,10 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
-
-        # LoRA
-        if config.use_lora:
-            self.lora_attn = LoRALayer(config.n_embd, 2 * config.n_embd, rank=config.lora_rank)
-            if config.lora_proj:
-                self.lora_proj = LoRALayer(config.n_embd, config.n_embd, rank=config.lora_rank)
-
         # Masked attention
         self.masked_bias = torch.tensor(-1e4)
 
-
-    def forward(self, x: torch.Tensor, attention_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attention_bias: Optional[torch.Tensor] = None, return_attn: bool = False) -> torch.Tensor:
         """
         Applies causal self-attention to the given tensor,
         with a mask to prevent attention to future positions.
@@ -117,17 +95,8 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
 
-        if self.config.use_lora:
-            lora_k, lora_v = self.lora_attn(x).split(self.n_embd, dim=2)
-
-            lora_k = lora_k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-            lora_v = lora_v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-
-            k = k + lora_k
-            v = v + lora_v
-
         #causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
+        if self.flash and not return_attn:
             if attention_bias is not None:
                 # Expand attention_bias to match the number of heads
                 attention_bias = attention_bias.unsqueeze(1) # Shape (B, 1, T, T)
@@ -151,12 +120,11 @@ class CausalSelfAttention(nn.Module):
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
-
-        if self.config.use_lora and self.config.lora_proj:
-            y = self.resid_dropout(self.c_proj(y) + self.lora_proj(y))
+        y = self.resid_dropout(self.c_proj(y))
+        if not return_attn:
+            return y
         else:
-            y = self.resid_dropout(self.c_proj(y))
-        return y
+            return y, att
 
 def gelu(x: torch.Tensor) -> torch.Tensor:
     """
@@ -180,22 +148,10 @@ class MLP(nn.Module):
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
-        if config.use_lora:
-            if config.lora_mlp:
-                self.lora_fc = LoRALayer(config.n_embd, 4 * config.n_embd, rank=config.lora_rank)
-            if config.lora_proj:
-                self.lora_proj = LoRALayer(4 * config.n_embd, config.n_embd, rank=config.lora_rank)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.config.use_lora and self.config.lora_mlp:
-            x = self.c_fc(x) + self.lora_fc(x)
-        else:
-            x = self.c_fc(x)
+        x = self.c_fc(x)
         x = gelu(x)
-        if self.config.use_lora and self.config.lora_proj:
-            x = self.c_proj(x) + self.lora_proj(x)
-        else:
-            x = self.c_proj(x)
+        x = self.c_proj(x)
         x = self.dropout(x)
         return x
 
@@ -208,7 +164,7 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x: torch.Tensor, attention_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attention_bias: Optional[torch.Tensor] = None, return_attn: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor]]:
         """
         Forward pass for the Transformer Block module. A Block module includes causal self-attention,
         layer normalization, and MLP, and residual connections.
@@ -216,9 +172,15 @@ class Block(nn.Module):
         :param x: input to the transformer block
         :returns: output of the transformer block, with the same shape as in the input
         """
-        x = x + self.attn(self.ln_1(x), attention_bias)
-        x = x + self.mlp(self.ln_2(x))
-        return x
+        if not return_attn:
+            x = x + self.attn(self.ln_1(x), attention_bias)
+            x = x + self.mlp(self.ln_2(x))
+            return x
+        else:
+            y, att = self.attn(self.ln_1(x), attention_bias, return_attn=return_attn)
+            x = x + y
+            x = x + self.mlp(self.ln_2(x))
+            return x, att
 
 class Decifer(nn.Module):
 
@@ -226,29 +188,30 @@ class Decifer(nn.Module):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
-        assert config.cond_size is not None
+        assert config.condition_size is not None
 
         self.config = config
 
         self.tokenizer = Tokenizer()
 
+        self.attn_scores = None
+
         # Condtional embedding: either using straight MLP or direct CL encoding
-        if config.condition_with_cl_emb:
-
-            # Load CLEncoder model pretrained on embedding size
-            assert config.cl_model_ckpt is not None, f"No CL model checkpoint given, received {config.cl_model_ckpt}"
-            cl_checkpoint = torch.load(config.cl_model_ckpt)
-            cl_encoder = CLEncoder(**cl_checkpoint['model_args'])
-            cl_encoder.load_state_dict(cl_checkpoint['model'])
-
-            # Define cond_embedding.
-            cond_embedding = cl_encoder.enc
-
-        elif config.condition_with_mlp_emb:
-
+        if config.condition:
             # MLP to embedding size
             cond_embedding = nn.Sequential(
-                nn.Linear(config.cond_size, config.cond_hidden_size),
+                nn.Linear(config.condition_size, config.condition_embedder_hidden_layers[0]),
+                nn.ReLU(),
+                *[
+                    nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.ReLU())
+                    for hidden_size in config.condition_embedder_hidden_layers[:-1]
+                ],
+                nn.Linear(config.condition_embedder_hidden_layers[-1], config.n_embd)
+            )
+        elif config.use_old_model_format:
+            # MLP to embedding size
+            cond_embedding = nn.Sequential(
+                nn.Linear(config.condition_size, config.cond_hidden_size),
                 nn.ReLU(),
                 *[
                     nn.Sequential(nn.Linear(config.cond_hidden_size, config.cond_hidden_size), nn.ReLU())
@@ -256,26 +219,8 @@ class Decifer(nn.Module):
                 ],
                 nn.Linear(config.cond_hidden_size, config.n_embd)
             )
-            # cond_embedding = nn.Sequential(
-            #     nn.Linear(config.cond_size, config.cond_hidden_size),
-            #     nn.ReLU(),
-            #     *[nn.Sequential(nn.Linear(config.cond_hidden_size, config.cond_hidden_size), nn.ReLU())] * config.cond_num_hidden_layers,
-            #     nn.Linear(config.cond_hidden_size, config.n_embd)
-            # )
-            # cond_embedding = nn.Sequential(
-            #     nn.Linear(config.cond_size, config.cond_hidden_size),
-            #     nn.ReLU(),
-            #     nn.Linear(config.cond_hidden_size, config.n_embd),
-            # )
         else:
             cond_embedding = nn.Identity() # nn's version of None
-        
-        try: # TEMPORARY
-            if config.freeze_condition_embedding:
-                for param in cond_embedding.parameters():
-                        param.requires_grad = False
-        except:
-            pass
 
         self.transformer = nn.ModuleDict(dict(
             cond_embedding=cond_embedding,
@@ -296,23 +241,35 @@ class Decifer(nn.Module):
             if pn.endswith("c_proj.weight"):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
-        print("number of total parameters: %.2fM" % (self.get_num_params()/1e6,))
+        print("number of total non-trainable parameters: %.2fM" % (self.get_num_params()/1e6,))
+        print("number of total trainable parameters: %.2fM" % (self.get_num_params(trainable=True)/1e6,))
+        if self.config.condition:
+            print("number of total conditioning MLP parameters: %.2fM" % (self.get_num_params(return_cond_mlp=True)/1e6,))
 
-    def get_num_params(self, non_embedding: bool = True, trainable: bool = False) -> int:
+    def get_num_params(self, non_embedding: bool = True, trainable: bool = False, return_cond_mlp: bool = False) -> int:
         """
         Return the number of parameters in the model. Subtract the position embeddings
         by default. The token embeddings are always included, since they are used in the
         final layer due to weight tying.
 
         :param non_embedding: whether to subtract the position embeddings (default is True)
+        :param trainable: whether to return trainable parameters that requires_grad
+        :param return_cond_mlp: return only conditional mlp.
         :returns: the number of parameters in the model
         """
+        if return_cond_mlp:
+            assert self.config.condition == True
+            parameters = self.transformer.cond_embedding.parameters()
+        else:
+            parameters = self.parameters()
+
         if not trainable:
-            n_params = sum(p.numel() for p in self.parameters())
-            if non_embedding:
+            n_params = sum(p.numel() for p in parameters)
+            if non_embedding and not return_cond_mlp:
                 n_params -= self.transformer.wpe.weight.numel()
         else:
-            n_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+            n_params = sum(p.numel() for p in parameters if p.requires_grad)
+
         return n_params
 
     def _init_weights(self, module):
@@ -350,10 +307,8 @@ class Decifer(nn.Module):
             
         # Convert start indices to list of tensor
         start_indices_tensors = [torch.tensor(s, dtype=torch.long, device=device) for s in start_indices_batch]
-        #print(f"{start_indices_tensors=}")
-        #print(f"{cond_vec.shape=}")
 
-        if self.config.condition_with_mlp_emb or self.config.condition_with_cl_emb:
+        if self.config.condition:
 
             # Convert start indices to a list of tensors
             start_indices_tensors = [torch.tensor(s, dtype=torch.long, device=device) for s in start_indices_batch]
@@ -429,27 +384,6 @@ class Decifer(nn.Module):
                                          torch.full((1,), float('-inf'), dtype=ptdtype, device=device))
             # attention_bias is (B, T, T)
 
-            # import matplotlib.pyplot as plt
-            # import seaborn as sns
-            #
-            # for i in range(b):
-            #     fig, ax = plt.subplots()
-            #     sns.heatmap(attention_bias[i].cpu().numpy(), cmap='viridis', cbar=True, ax=ax)
-            #     ax.invert_yaxis()
-            #     ax.grid(alpha=0.1)
-            #     #ax.tick_params(axis='both', which='major', labelsize=6)
-            #     # Set every tick position and label
-            #     ax.set_xticks(torch.arange(attention_bias[i].shape[1]) + 0.5)
-            #     ax.set_yticks(torch.arange(attention_bias[i].shape[0]) + 0.5)
-            #     ax.set_xticklabels(range(attention_bias[i].shape[1]), fontsize=0.3, rotation=90)  # X-tick labels rotated for better fit
-            #     ax.set_yticklabels(range(attention_bias[i].shape[0]), fontsize=0.3)
-            #     for pos in cond_indices[cond_indices[:, 0] == i, 1]:
-            #         ax.axvline(x = pos.cpu().numpy(), lw=0.1)
-            #     fig.savefig(f'attention_mask_{i}.pdf')
-            #     plt.close(fig)
-            #
-            # sys.exit()
-
             # Adjust targets if provided
             if targets is not None:
                 # Gather indices where index_map >= 0
@@ -486,24 +420,14 @@ class Decifer(nn.Module):
                                              torch.full((1,), float('-inf'), dtype=ptdtype, device=device))
                 # attention_bias is (B, T, T)
 
-                # import matplotlib.pyplot as plt
-                # import seaborn as sns
-                #
-                # for i in range(b):
-                #    fig, ax = plt.subplots()
-                #    sns.heatmap(attention_bias[i].cpu().numpy(), cmap='viridis', cbar=True, ax=ax)
-                #    ax.invert_yaxis()
-                #    fig.savefig(f'attention_mask_{i}.png')
-                #    plt.close(fig)
-                #
-                # sys.exit()
-
         # Combine token and position embeddings
         x = self.transformer.drop(tok_emb + pos_emb)
 
         # Forward pass through transformer blocks
-        for block in self.transformer.h:
-            x = block(x, attention_bias=attention_bias)
+        self.attn_scores = []
+        for i, block in enumerate(self.transformer.h):
+            x, att = block(x, attention_bias=attention_bias, return_attn=True)
+            self.attn_scores.append(att.detach().cpu().mean(dim=1))
 
         x = self.transformer.ln_f(x)
 
@@ -513,115 +437,6 @@ class Decifer(nn.Module):
         else:
             # Inference mode
             logits = self.lm_head(x[:, [-1], :])  # only the last token
-            loss = None
-
-        return logits, loss
-
-
-    def forward_old(self, idx, cond_vec=None, targets=None, start_indices_batch=None,):
-        device = idx.device
-        b, t = idx.size()
-        ptdtype = self.transformer.wte.weight.dtype
-
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-
-        positions = torch.arange(t, device=device).unsqueeze(0).expand(b, t) # Shape (b, t)
-
-        if start_indices_batch is not None and self.config.boundary_masking:
-            # Init start_mask
-            start_mask = torch.zeros((b, t), dtype=torch.long, device=device)
-
-            # Collect valid start indeices and batch indices
-            start_indices_list = []
-            batch_indices_list = []
-            for i, start_indices in enumerate(start_indices_batch):
-                valid_indices = start_indices[(start_indices >= 0) & (start_indices < t)]
-                start_indices_list.append(valid_indices)
-                batch_indices_list.append(torch.full_like(valid_indices, i))
-
-            # Concatenate all valid start indices and batch indices
-            if start_indices_list:
-                start_indices_flat = torch.cat(start_indices_list)
-                batch_indices_flat = torch.cat(batch_indices_list)
-
-                # Set start mask
-                start_mask[batch_indices_flat, start_indices_flat] = 1
-            else:
-                # If no valid start indices, default to zeros
-                pass
-
-            # Compute group IDs
-            group_ids = torch.cumsum(start_mask, dim=1)  # Shape: (b, t)
-
-            # Compute last start positions
-            start_positions = torch.where(start_mask == 1, positions, torch.tensor(0, device=device))
-            last_start_positions, _ = torch.cummax(start_positions, dim=1)
-
-            # Compute positions within each group
-            positions_in_group = positions - last_start_positions
-
-            # Create attention mask
-            attention_mask = (group_ids.unsqueeze(2) == group_ids.unsqueeze(1)) & (positions.unsqueeze(2) >= positions.unsqueeze(1))
-            # Convert to additive attention bias
-            attention_bias = torch.zeros_like(attention_mask, dtype=ptdtype)
-            attention_bias.masked_fill_(~attention_mask, float('-inf'))
-            attention_bias = attention_bias.unsqueeze(1)  # Shape: (b, 1, t, t)
-        else:
-            positions_in_group = positions
-            attention_bias = None
-
-        #pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0)  # shape (1, t+1), pos_idx -1 for conditioning input
-
-        # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(positions_in_group)  # position embeddings of shape (1, t, n_embd)
-
-        #import matplotlib.pyplot as plt
-        #import seaborn as sns
-
-        #for i in range(b):
-        #    fig, ax = plt.subplots()
-        #    sns.heatmap(attention_bias[i][0].cpu().numpy(), cmap='viridis', cbar=True, ax=ax)
-        #    ax.invert_yaxis()
-        #    fig.savefig(f'attention_mask_{i}.png')
-        #    plt.close(fig)
-        #    for p in positions_in_group[i]:
-        #        print(p)
-        #print(len())
-
-        # Conditioning
-        if cond_vec is not None:
-            cond_emb = self.transformer.cond_embedding(cond_vec).unsqueeze(1) # shape (b, 1, n_embd)
-            tok_emb = torch.cat([cond_emb, tok_emb], dim=1)
-            pos_emb = torch.cat([torch.zeros_like(cond_emb), pos_emb], dim=1)
-            t = t + 1 # Update sequence length
-
-            # Update attention mask
-            if attention_bias is not None:
-                attention_bias = F.pad(attention_bias, (1,0,1,0), value=0)
-                attention_bias[:,:,0,:] = float('-inf') # Prevent cond token from attending to future tokens
-                attention_bias[:,:,:,0] = 0 # Allows tokens to attend to cond token
-
-            positions_in_group = F.pad(positions_in_group, (1,0), value=0)
-            t = positions_in_group.size(1)
-
-        x = self.transformer.drop(tok_emb + pos_emb)
-
-        for block in self.transformer.h:
-            x = block(x)
-        x = self.transformer.ln_f(x)
-
-        if cond_vec is not None:
-            # Remove conditioning again
-            x = x[:, 1:]
-
-        if targets is not None:
-            # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-        else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
         return logits, loss
@@ -665,9 +480,6 @@ class Decifer(nn.Module):
                     # weights of blacklist modules will NOT be weight decayed
                     no_decay.add(fpn)
 
-                if 'lora' in fpn:
-                    decay.add(fpn)
-
         # subtle: "transformer.wte.weight" and "lm_head.weight" are tied, so they
         # will appear in the no_decay and decay sets respectively after the above.
         # In addition, because named_parameters() doesn't return duplicates, it
@@ -700,9 +512,6 @@ class Decifer(nn.Module):
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
-        tokenizer = Tokenizer()
-        newline_id = tokenizer.token_to_id["\n"]
-        pad_id = tokenizer.padding_id
         prev_id = None
         generation_pbar = tqdm(total=max_new_tokens, desc='Generating sequence', leave=False, disable=disable_pbar)
         for _ in range(max_new_tokens):
@@ -723,10 +532,10 @@ class Decifer(nn.Module):
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
             # a sequence of two newlines indicates the end of a CIF file
-            if prev_id is not None and prev_id == newline_id and idx_next.item() == newline_id:
+            if prev_id is not None and prev_id == NEWLINE_ID and idx_next.item() == NEWLINE_ID:
                 break
             # as soon as <pad> is hit -> end of cif
-            if idx_next.item() == pad_id:
+            if idx_next.item() == PADDING_ID:
                 idx = idx[:,:-1]
                 break
             prev_id = idx_next.item()
@@ -741,9 +550,6 @@ class Decifer(nn.Module):
         Take a conditioning sequence of indices idx (LongTensor of shape (batch_size, seq_len)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         """
-        tokenizer = Tokenizer()
-        newline_id = tokenizer.token_to_id["\n"]
-        pad_id = tokenizer.padding_id
         batch_size = idx.size(0)
         device = idx.device
 
@@ -766,7 +572,7 @@ class Decifer(nn.Module):
             # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
             # sample from the distribution
-            idx_next = torch.full((batch_size, 1), fill_value=pad_id, dtype=torch.long, device=device)
+            idx_next = torch.full((batch_size, 1), fill_value=PADDING_ID, dtype=torch.long, device=device)
             active_mask = ~finished
             if active_mask.any():
                 idx_next[active_mask] = torch.multinomial(probs[active_mask], num_samples=1)
@@ -774,7 +580,7 @@ class Decifer(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
             # Update prev_id and check stopping conditions
             idx_next_squeezed = idx_next.squeeze(-1)
-            end_condition = ((prev_id == newline_id) & (idx_next_squeezed == newline_id)) | (idx_next_squeezed == pad_id)
+            end_condition = ((prev_id == NEWLINE_ID) & (idx_next_squeezed == NEWLINE_ID)) | (idx_next_squeezed == PADDING_ID)
             # Record sequence lengths when sequences finish
             just_finished = end_condition & (~finished)
             # Exclude the last token that triggered the end condition
@@ -796,15 +602,12 @@ class Decifer(nn.Module):
         return idx_truncated
     
     @torch.no_grad()
-    def generate_and_print(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None):
+    def generate_and_print(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None, custom_cond_emb=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
-        tokenizer = Tokenizer()
-        newline_id = tokenizer.token_to_id["\n"]
-        pad_id = tokenizer.padding_id
         prev_id = None
             
         for id in idx[0]:
@@ -817,7 +620,7 @@ class Decifer(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond, cond_vec=cond_vec, start_indices_batch=start_indices_batch)
+            logits, _ = self(idx_cond, cond_vec=cond_vec, start_indices_batch=start_indices_batch, custom_cond_emb=custom_cond_emb)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
@@ -830,7 +633,7 @@ class Decifer(nn.Module):
             idx_next = torch.multinomial(probs, num_samples=1)
             
             # as soon as <pad> is hit -> end of cif
-            if idx_next.item() == pad_id:
+            if idx_next.item() == PADDING_ID:
                 idx = idx[:,:-1]
                 break
 
@@ -843,76 +646,9 @@ class Decifer(nn.Module):
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
             # a sequence of two newlines indicates the end of a CIF file
-            if prev_id is not None and prev_id == newline_id and idx_next.item() == newline_id:
+            if prev_id is not None and prev_id == NEWLINE_ID and idx_next.item() == NEWLINE_ID:
                 break
                 
             prev_id = idx_next.item()
 
         return idx
-
-    @torch.no_grad()
-    def generate_sequences(self, sequences, prompt_lengths, max_new_tokens, temperature=1.0, top_k=None, disable_pbar=False):
-        """
-        Perform inference one by one for each input sequence, but as fast as possible with pre-allocation and minimization of tensor concatenation.
-        """
-        tokenizer = Tokenizer()
-        newline_id = tokenizer.token_to_id["\n"]
-        pad_id = tokenizer.padding_id
-
-        generation_pbar = tqdm(total=len(sequences) * max_new_tokens, desc='Generating sequences', leave=False, disable=disable_pbar)
-
-        # Store the generated outputs for all sequences
-        all_generated = []
-
-        # Ensure the model is in evaluation mode for faster inference
-        self.eval()
-
-        # Pre-allocate the generated sequence tensor to avoid repeated memory allocations
-        for i, prompt in enumerate(sequences):
-            # Pre-allocate the max sequence length
-            max_length = prompt_lengths[i] + max_new_tokens
-            generated_sequence = torch.zeros((max_length,), dtype=torch.long, device=prompt.device)
-            generated_sequence[:prompt_lengths[i]] = prompt[:prompt_lengths[i]]
-            seq_len = prompt_lengths[i]
-            finished = False
-
-            for step in range(max_new_tokens):
-                if finished:
-                    break
-
-                # Forward pass: only take the valid portion of the sequence (last block_size tokens)
-                idx_cond = generated_sequence[max(0, seq_len - self.config.block_size):seq_len].unsqueeze(0)  # (1, seq_len)
-                logits, _ = self(idx_cond)
-
-                # Take logits for the last position and scale by temperature
-                logits = logits[:, -1, :] / temperature
-
-                # Apply top-k filtering if specified
-                if top_k is not None:
-                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < v[:, [-1]]] = -float("Inf")
-
-                # Compute probabilities and sample from the distribution
-                probs = F.softmax(logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1).squeeze(0)
-
-                # Append the new token to the generated sequence
-                generated_sequence[seq_len] = next_token
-                seq_len += 1
-
-                # Check for stopping conditions: <pad> or double newline
-                if next_token.item() == pad_id or (generated_sequence[seq_len - 2].item() == newline_id and next_token.item() == newline_id):
-                    finished = True
-
-                generation_pbar.update(1)
-
-            # Add the final generated sequence without padding
-            all_generated.append(generated_sequence[:seq_len])
-
-        generation_pbar.close()
-
-        return all_generated
-
-
-
-

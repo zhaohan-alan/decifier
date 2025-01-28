@@ -1,12 +1,17 @@
+#!/usr/bin/env python3
+
+"""
+Adapted from:
+CrystaLLM: https://github.com/lantunes/CrystaLLM/blob/main/crystallm/_model.py
+"""
+
 import os
 import re
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-
 with open(os.path.join(THIS_DIR, "spacegroups.txt"), "rt") as f:
     SPACE_GROUPS = [sg.strip() for sg in f.readlines()]
-
 
 ATOMS = ["Si", "C", "Pb", "I", "Br", "Cl", "Eu", "O", "Fe", "Sb", "In", "S", "N", "U", "Mn", "Lu", "Se", "Tl", "Hf",
          "Ir", "Ca", "Ta", "Cr", "K", "Pm", "Mg", "Zn", "Cu", "Sn", "Ti", "B", "W", "P", "H", "Pd", "As", "Co", "Np",
