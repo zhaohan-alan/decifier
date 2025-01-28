@@ -1,0 +1,7 @@
+output_folder: experiments/unconditioned/comparisons
+debug_max: null
+
+eval_folder_dict:
+  no_prompt: experiments/unconditioned/eval_files/noprompt
+  composition: experiments/unconditioned/eval_files/composition
+  composition+spacegroup: experiments/unconditioned/eval_files/composition_spacegroup

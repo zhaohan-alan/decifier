@@ -1,0 +1,41 @@
+out_dir: 'cond_mlp_aug_large_16_heads'
+eval_interval: 250  # how often to evaluate against the validation set
+eval_iters_train: 200
+eval_iters_val: 200
+log_interval: 1  # how often to print to the console (1 = every iteration)
+init_from: 'scratch'
+
+device: 'cuda'
+compile: False
+
+dtype: 'float16'
+
+# whether to always save a checkpoint
+always_save_checkpoint: True
+
+# whether to validate with a validation set
+validate: True
+
+dataset: 'data/crystallm/full'
+batch_size: 32
+block_size: 2048
+
+n_layer: 8
+n_head: 16
+n_embd: 512
+dropout: 0.1
+
+learning_rate: 1e-3
+max_iters: 50_000
+lr_decay_iters: 50_000
+min_lr: 1e-6
+beta2: 0.99
+
+warmup_iters: 100
+
+early_stopping_patience: 50
+
+condition_with_mlp_emb: True
+condition_with_cl_emb: False
+boundary_masking: True
+

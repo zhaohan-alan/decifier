@@ -1,0 +1,58 @@
+experiment_folder: experiments/model__conditioned_mlp_augmentation__context_3076/20k_comparison_files
+debug_max: null
+fingerprint_comparison: true
+crystal_system_metric_comparison: true
+metrics_vs_seq_len: false
+validity_vs_seq_len: true
+
+validity_comparison: false
+metrics_comparison: false
+
+vlines: [3]
+
+legend_ncol_crystal_system: 4
+legend_ncol_validity: 2
+color_pair_size: 1
+x_anchor: 0.5
+y_anchor: 1.0
+
+bar_width: 0.1 #0.065
+
+legend_labels: []
+
+ylabels: [
+  '$\sigma_{\text{noise}}=1.00$\n$\text{FWHM}=0.05\degree$',
+  '$\sigma_{\text{noise}}=0.05$\n$\text{FWHM}=0.05\degree$',
+  '$\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.10\degree$',
+  '$\sigma_{\text{noise}}=0.05$\n$\text{FWHM}=0.10\degree$',
+  '$\sigma_{\text{noise}}=0.10$\n$\text{FWHM}=0.05\degree$',
+  '$\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.20\degree$',
+  '$\sigma_{\text{noise}}=0.10$\n$\text{FWHM}=0.20\degree$',
+]
+
+output_folder: experiments/model__conditioned_mlp_augmentation__context_3076/robustness
+
+eval_dict:
+  $\sigma_{\text{noise}}=1.00$\n$\text{FWHM}=0.05\degree$: deCIFer_(Comp_N-0p00_B-0p05).pkl.gz
+  $\sigma_{\text{noise}}=0.05$\n$\text{FWHM}=0.05\degree$: deCIFer_(Comp_N-0p05_B-0p05).pkl.gz
+  $\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.10\degree$: deCIFer_(Comp_N-0p00_B-0p10).pkl.gz
+  $\sigma_{\text{noise}}=0.05$\n$\text{FWHM}=0.10\degree$: deCIFer_(Comp_N-0p05_B-0p10).pkl.gz
+
+  $\sigma_{\text{noise}}=0.10$\n$\text{FWHM}=0.05\degree$: deCIFer_(None_N-0p10_B-0p05).pkl.gz
+  $\sigma_{\text{noise}}=0.00$\n$\text{FWHM}=0.20\degree$: deCIFer_(None_N-0p00_B-0p20).pkl.gz
+  $\sigma_{\text{noise}}=0.10$\n$\text{FWHM}=0.20\degree$: deCIFer_(None_N-0p10_B-0p20).pkl.gz
+  
+  # (None) (N-0p00) (B-0p05): deCIFer_None_N-0p00_B-0p05.pkl.gz
+  # (None) (N-0p05) (B-0p05): deCIFer_None_N-0p05_B-0p05.pkl.gz
+  # (None) (N-0p00) (B-0p10): deCIFer_None_N-0p00_B-0p10.pkl.gz
+  # (None) (N-0p05) (B-0p10): deCIFer_None_N-0p05_B-0p10.pkl.gz
+
+  # (Comp) (N-0p00) (B-0p05): deCIFer_Comp_N-0p00_B-0p05.pkl.gz
+  # (Comp) (N-0p05) (B-0p05): deCIFer_Comp_N-0p05_B-0p05.pkl.gz
+  # (Comp) (N-0p00) (B-0p10): deCIFer_Comp_N-0p00_B-0p10.pkl.gz
+  # (Comp) (N-0p05) (B-0p10): deCIFer_Comp_N-0p05_B-0p10.pkl.gz
+  #
+  # (CompSG) (N-0p00) (B-0p05): deCIFer_CompSG_N-0p00_B-0p05.pkl.gz
+  # (CompSG) (N-0p05) (B-0p05): deCIFer_CompSG_N-0p05_B-0p05.pkl.gz
+  # (CompSG) (N-0p00) (B-0p10): deCIFer_CompSG_N-0p00_B-0p10.pkl.gz
+  # (CompSG) (N-0p05) (B-0p10): deCIFer_CompSG_N-0p05_B-0p10.pkl.gz

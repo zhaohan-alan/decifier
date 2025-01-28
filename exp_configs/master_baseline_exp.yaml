@@ -1,0 +1,62 @@
+experiment_folder: model__conditioned_mlp_augmentation__context_3076
+debug_max: null
+fingerprint_comparison: false
+crystal_system_metric_comparison: false
+metrics_vs_seq_len: false
+validity_vs_seq_len: false
+
+validity_comparison: false
+metrics_comparison: false
+
+vlines: [1, 3]
+
+legend_ncol_crystal_system: 3
+legend_ncol_validity: 3
+color_pair_size: 2
+x_anchor: 0.5
+y_anchor: 1.0
+
+legend_labels: ['None', 'Comp', 'Comp+SG']
+ylabels: ['deCIFer-U', 'deCIFer', 'deCIFer-U', 'deCIFer', 'deCIFer-U', 'deCIFer']
+
+output_folder: comparison_files_fullXRD
+
+eval_dict:
+
+  # Baseline
+  deCIFer chili (None, N-0p00, B-0p05): eval_files/chili_none_N-0p00_B-0p05/
+  deCIFer chili (Comp, N-0p00, B-0p05): eval_files/chili_comp_N-0p00_B-0p05/
+  deCIFer chili (CompSG, N-0p00, B-0p05): eval_files/chili_compSG_N-0p00_B-0p05/
+
+  # Robustness
+  deCIFer chili (Comp, N-0p05, B-0p05): eval_files/chili_comp_N-0p05_B-0p05/
+  deCIFer chili (Comp, N-0p00, B-0p10): eval_files/chili_comp_N-0p00_B-0p10/
+  deCIFer chili (Comp, N-0p05, B-0p10): eval_files/chili_comp_N-0p05_B-0p10/
+  
+  # OOD
+  deCIFer chili (Comp, N-0p00, B-0p20): eval_files/chili_comp_N-0p00_B-0p20/
+  deCIFer chili (Comp, N-0p10, B-0p05): eval_files/chili_comp_N-0p10_B-0p05/
+  deCIFer chili (Comp, N-0p10, B-0p20): eval_files/chili_comp_N-0p10_B-0p20/
+
+  #deCIFer (None, N-0p00, B-0p05): eval_files/none_N-0p00_B-0p05/
+  #deCIFer (None, N-0p00, B-0p10): eval_files/none_N-0p00_B-0p10/
+  #deCIFer (None, N-0p05, B-0p05): eval_files/none_N-0p05_B-0p05/
+  #deCIFer (None, N-0p05, B-0p10): eval_files/none_N-0p05_B-0p10/
+
+  #deCIFer (Comp, N-0p00, B-0p05): eval_files/comp_N-0p00_B-0p05/
+  #deCIFer (Comp, N-0p00, B-0p10): eval_files/comp_N-0p00_B-0p10/
+  #deCIFer (Comp, N-0p05, B-0p05): eval_files/comp_N-0p05_B-0p05/
+  #deCIFer (Comp, N-0p05, B-0p10): eval_files/comp_N-0p05_B-0p10/
+  
+  #deCIFer (Comp, N-0p00, B-0p20): eval_files/comp_N-0p00_B-0p20/
+  #deCIFer (Comp, N-0p10, B-0p05): eval_files/comp_N-0p10_B-0p05/
+  #deCIFer (Comp, N-0p10, B-0p20): eval_files/comp_N-0p10_B-0p20/
+  
+  #deCIFer (Comp+SG, N-0p00, B-0p05): eval_files/compSG_N-0p00_B-0p05/
+  #deCIFer (Comp+SG, N-0p00, B-0p10): eval_files/compSG_N-0p00_B-0p10/
+  #deCIFer (Comp+SG, N-0p05, B-0p05): eval_files/compSG_N-0p05_B-0p05/
+  #deCIFer (Comp+SG, N-0p05, B-0p10): eval_files/compSG_N-0p05_B-0p10/
+
+  #deCIFer-U (None): ../model__nocond__context_3076/eval_files/U_none/
+  #deCIFer-U (Comp): ../model__nocond__context_3076/eval_files/U_comp/
+  #deCIFer-U (CompSG): ../model__nocond__context_3076/eval_files/U_compSG/

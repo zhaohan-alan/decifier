@@ -4,7 +4,6 @@ import argparse
 from tqdm import tqdm
 import requests
 
-
 STORAGE_URL = "https://zenodo.org/records/10642388/files"
 
 BLOCK_SIZE = 1024

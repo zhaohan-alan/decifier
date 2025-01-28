@@ -1,0 +1,23 @@
+output_folder: "experiment_test_cond_noise"
+debug_max: 500
+use_deprecated_keys: false
+fingerprint_comparison: true
+structural_diversity: false
+
+eval_folder_dict: {
+#   "cond": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/noprompt_0pctnoise_1pctfwhm",
+   # "cond + C": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_0pctnoise_1pctfwhm",
+   # "cond + C + S": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_0pctnoise_1pctfwhm",
+   # "cond + C + S + 1ppt noise + 1pct fwhm": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_1pptnoise_1pctfwhm",
+   # "cond + C + S + 1ppt noise + 10pct fwhm": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_1pptnoise_10pctfwhm",
+#   "cond + C + S + 1ppt noise + 50pct fwhm": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_1pptnoise_50pctfwhm",
+   # "cond + C + S + 1pct noise + 1pct fwhm": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_1pctnoise_1pctfwhm",
+#   "cond + C + S + 1pct noise + 10pct fwhm": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_1pctnoise_10pctfwhm",
+#   "cond + C + S + 1pct noise + 50pct fwhm": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_1pctnoise_50pctfwhm",
+   # "cond + C + S + 5pct noise + 1pct fwhm": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_5pctnoise_1pctfwhm",
+#   "cond + C + S + 5pct noise + 10pct fwhm": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_5pctnoise_10pctfwhm",
+#   "cond + C + S + 5pct noise + 50pct fwhm": "experiments_11nov24/conditioning_mlp_augmentation/eval_files/composition_spacegroup_5pctnoise_50pctfwhm",
+   "nocond": "experiments_11nov24/no_conditioning_with_boundary_masking/eval_files/noprompt_0pctnoise_1pctfwhm",
+# "nocond + C": "experiments_11nov24/no_conditioning_with_boundary_masking/eval_files/composition_0pctnoise_1pctfwhm",
+# "nocond + C + S": "experiments_11nov24/no_conditioning_with_boundary_masking/eval_files/composition_spacegroup_0pctnoise_1pctfwhm",
+} 

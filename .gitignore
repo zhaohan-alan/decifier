@@ -1,6 +1,22 @@
 # Ignore data
-decifer/data/ 
-decifer/logs/
+data/ 
+logs/
+**/*.pkl.gz
+**/*.cif
+**/*.h5
+**/*.json
+**/*.log*
+
+# Ignore experiments
+experiments/
+experiments_old/
+cl_experiments/
+
+# Ignore egg folders
+**/*.egg-info/
+
+# Ignore .npz files
+**/*.npz
 
 # Ignore pycache and notebook checkpoints
 **/__pycache__/
@@ -13,6 +29,7 @@ decifer/logs/
 **/*.png
 **/*.jpg
 **/*.csv
+**/*.pdf
 
 # Ignore eval files
 **/*.parquet
