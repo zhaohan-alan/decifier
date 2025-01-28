@@ -552,7 +552,7 @@ def save_h5(h5_path, cif_names, data_types):
                         raise TypeError(f"Unsupported data type for key '{data_key}': {type(data_value)}")
             current_size += 1
 
-def serialize(root, num_workers, seed):
+def serialize(root, num_workers, seed, ignore_data_split=False):
 
     # Locate available data TODO make this automatic based on folder names etc.
     pre_dir = os.path.join(root, "preprocessed")
@@ -572,22 +572,6 @@ def serialize(root, num_workers, seed):
     cif_names = [item[0] for item in results if item is not None]
     strat_keys = [item[1] for item in results if item is not None]
     
-    # Create data splits
-    train_size = int(0.9 * dataset_size)
-    val_size = int(0.075 * dataset_size)
-    test_size = dataset_size - train_size - val_size
-
-    print("Train size:", train_size)
-    print("Val size:", val_size)
-    print("Test size:", test_size)
-
-    cif_names_temp, cif_names_test, strat_keys_temp, _ = train_test_split(
-        cif_names, strat_keys, test_size = test_size, stratify = strat_keys, random_state = seed,
-    )
-    cif_names_train, cif_names_val = train_test_split(
-        cif_names_temp, test_size = test_size, stratify = strat_keys_temp, random_state = seed,
-    )
-
     # Data types
     data_types = []
 
@@ -603,9 +587,29 @@ def serialize(root, num_workers, seed):
     cif_token_paths = glob(os.path.join(cif_token_dir, "*.pkl.gz"))
     if len(cif_token_paths) > 0:
         data_types.append({'dir': cif_token_dir, 'keys': ['cif_tokens']})
+    
+    # Create data splits
+    if not ignore_data_split:
+        train_size = int(0.9 * dataset_size)
+        val_size = int(0.075 * dataset_size)
+        test_size = dataset_size - train_size - val_size
 
-    for cif_names, split_name in zip([cif_names_train, cif_names_val, cif_names_test], ['train', 'val', 'test']):
-        h5_path = os.path.join(ser_dir, f'{split_name}.h5')
+        print("Train size:", train_size)
+        print("Val size:", val_size)
+        print("Test size:", test_size)
+
+        cif_names_temp, cif_names_test, strat_keys_temp, _ = train_test_split(
+            cif_names, strat_keys, test_size = test_size, stratify = strat_keys, random_state = seed,
+        )
+        cif_names_train, cif_names_val = train_test_split(
+            cif_names_temp, test_size = test_size, stratify = strat_keys_temp, random_state = seed,
+        )
+    
+        for cif_names, split_name in zip([cif_names_train, cif_names_val, cif_names_test], ['train', 'val', 'test']):
+            h5_path = os.path.join(ser_dir, f'{split_name}.h5')
+            save_h5(h5_path, cif_names, data_types)
+    else:
+        h5_path = os.path.join(ser_dir, f'test.h5')
         save_h5(h5_path, cif_names, data_types)
 
 def retrieve_worker(args):
@@ -650,6 +654,7 @@ if __name__ == "__main__":
     parser.add_argument("--tokenize", help="tokenize CIFs", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--serialize", help="serialize data by hdf5 convertion", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--all", help="process, calculate xrd, tokenize and serialize", action="store_true")
+    parser.add_argument("--ignore-data-split", help='Ignore data splitting and serialize all data into test.h5', action='store_true')
 
     parser.add_argument("--debug-max", help="Debug-feature: max number of files to process", type=int, default=0)
     parser.add_argument("--debug", help="Debug-feature: whether to print debug messages", action="store_true")
@@ -748,7 +753,7 @@ if __name__ == "__main__":
         )
     
     if args.serialize:
-        serialize(args.data_dir, args.num_workers, args.seed)
+        serialize(args.data_dir, args.num_workers, args.seed, args.ignore_data_split)
 
     # Store all arguments passed to the main function in centralized metadata
     metadata = {
