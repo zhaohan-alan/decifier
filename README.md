@@ -7,7 +7,7 @@ deCIFer is an autoregressive language model for crystal structure prediction (CS
 ## Table of Contents
 1. [Setup](#setup)
 2. [Data Preparation](#data-preparation)
-3. [Training from Scratch](#training)
+3. [Training](#training)
 4. [Evaluation Pipeline](#evaluation)
 5. [CIF Generation Consistency Experiment](#cif-generation-consistency-experiment)
 6. [License](#license)
