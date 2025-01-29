@@ -123,7 +123,7 @@ class TrainConfig:
     # system
     device: str = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype: str = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-    compile: bool = True  # use PyTorch 2.0 to compile the model to be faster
+    compile: bool = False  # use PyTorch 2.0 to compile the model to be faster (Not supported for deCIFer currently)
     validate: bool = False  # whether to evaluate the model using the validation set
     seed: int = 1337
 

@@ -566,7 +566,6 @@ def main():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = load_model_from_checkpoint(args.model_ckpt, device)
         model.eval()
-        print(model)
     else:
         print(f"Checkpoint not found at {args.model_ckpt}")
         sys.exit(1)
