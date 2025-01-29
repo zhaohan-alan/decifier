@@ -1,4 +1,5 @@
 # deCIFer: Crystal Structure Prediction from Powder Diffraction Data
+*Anonymized version*
 
 **Shortened Abstract**  
 deCIFer is an autoregressive language model for crystal structure prediction (CSP) from powder X-ray diffraction (PXRD) data, generating Crystallographic Information Files (CIFs) directly from diffraction patterns. Trained on nearly 2.3 million crystal structures, it is validated on diverse PXRD datasets for inorganic systems. Evaluations using residual weighted profile (Rwp) and Wasserstein distance show improved predictions when conditioned on diffraction data. deCIFer achieves a 94% match rate on unseen data, bridging experimental diffraction with computational CSP for materials discovery.
@@ -9,13 +10,10 @@ deCIFer is an autoregressive language model for crystal structure prediction (CS
 3. [Training from Scratch](#training-from-scratch)
 4. [Resuming Training](#resuming-training)
 5. [Evaluation Pipeline](#evaluation)
-6. [Additional Functionalities](#additional-functionalities)
-   - [Unconditioned Structure Generation](#unconditioned-structure-generation)
-   - [Conditioned Structure Generation](#conditioned-structure-generation)
-   - [Consistency Checks with `generation_consistency.py`](#consistency-checks-with-generation_consistencypy)
+6. [CIF Generation Consistency Experiment](#cif-generation-consitency-experiment)
 7. [License](#license)
 
-# Setup
+## Setup
 We recommend using **Python 3.9**, as deCIFer was developed and tested with this version. Other versions may work but have not been verified.
 
 1. **Clone the repository**:
@@ -34,10 +32,175 @@ Follow the instructions on the official PyTorch website to install the appropria
 
 4. **Install other dependencies**:
 ```bash
-pip install numpy pandas matplotlib seaborn pyYAML tqdm omegaconf h5py pymatgen periodictable scikit-learn
+pip install numpy pandas matplotlib seaborn pyYAML tqdm omegaconf h5py pymatgen periodictable scikit-learn notebook
 ```
 
-# Data Preparation
-```python
+## Data Preparation
+Before training or evaluation, the dataset must be preprocessed into a structured format that deCIFer can use. This includes **parsing CIF files**, **computing XRD patterns**, **tokenizing CIFs**, and **serializing the processed data into HDF5 format**.
+To prepare a dataset, use the `prepare_dataset.py` script with the desired options. Here is an example:
+```bash
 python bin/prepare_dataset.py --data-dir data/noma/ --name noma-1k --debug-max 1000 --all --raw-from-gzip
 ```
+### Arguments:
+
+- **General options**:
+  - `--data-dir <path>`: Path to the directory containing raw CIF and PXRD data.
+  - `--name <str>`: Identifier for the dataset (used to create an organized structure).
+  - `--debug-max <int>`: Limits processing to the first `N` samples (useful for debugging).
+  - `--raw-from-gzip`: If raw CIFs are stored in a `.gz` archive, extract them before processing.
+
+- **Processing steps**:
+  - `--preprocess`: Parses and cleans CIF files.
+  - `--xrd`: Computes diffraction patterns.
+  - `--tokenize`: Tokenizes CIF files for transformer-based models.
+  - `--serialize`: Serializes the processed dataset into HDF5 format.
+  - `--all`: Runs **all** preprocessing steps in sequence.
+
+- **Processing options**:
+  - `--num-workers <int>`: Number of parallel processes to use (default: all available CPUs - 1).
+  - `--include-occupancy-structures`: Include structures with atomic site occupancies below 1.
+  - `--ignore-data-split`: Disable automatic train/val/test splitting and serialize all data into `test.h5`.
+
+### Output Directory Structure
+
+After running `prepare_dataset.py`, the processed data will be stored in the following structure:
+```bash
+data/noma-1k/
+├── preprocessed/ – Parsed CIF files (cleaned, formatted, tokenized)
+├── xrd/ – Computed XRD patterns
+├── cif_tokens/ – Tokenized CIF representations
+├── serialized/ – Final dataset (train/val/test) stored as HDF5 files
+├── metadata.json – Stores some metadata
+```
+
+## Evaluation Pipeline
+The evaluation process consists of two main steps: **generating evaluations** for model predictions and **collecting** them into a single file for visualization and analysis.
+
+### Step 1: Generate Evaluations
+
+This step evaluates the model on a test dataset and saves individual `.pkl.gz` evaluation files. These separate files allow evaluations to be merged across different datasets and enable checkpointing (resuming evaluation later if needed).
+
+#### Required Arguments:
+- `--model-ckpt <path>`: Path to the trained model checkpoint.
+- `--dataset-path <path>`: Path to the test dataset in HDF5 format.
+- `--dataset-name <str>`: Identifier for the dataset.
+- `--out-folder <path>`: Folder where evaluation files will be stored.
+
+#### Optional Arguments:
+- `--num-workers <int>`: Number of worker processes for parallel evaluation.
+- `--debug-max <int>`: Maximum number of samples to process (for debugging).
+- `--add-composition`: Include atomic composition information in the evaluation.
+- `--add-spacegroup`: Include space group information in the evaluation.
+- `--max-new-tokens <int>`: Maximum number of tokens to generate for CIF structures.
+- `--num-reps <int>`: Number of times to generate a CIF for each test sample.
+- `--override`: Force regeneration of evaluations even if files already exist.
+- `--temperature <float>`: Sampling temperature for CIF generation.
+- `--top-k <int>`: Top-k filtering during sampling.
+- `--condition`: Use XRD conditioning for generation.
+
+#### Example Usage:
+
+Run evaluation on a test dataset and save results:
+
+```bash
+python bin/evaluate.py \
+  --model-ckpt deCIFer_model/ckpt.pt \
+  --dataset-path data/noma/1k/serialized/test.h5 \
+  --dataset-name noma-1k \
+  --out-folder eval_files \
+  --add-composition \
+  --add-spacegroup
+```
+Each evaluated structure will be saved as an individual .pkl.gz file in eval_files/eval_files/noma-1k/.
+
+### Step 2: Collect Evaluations
+
+Once all evaluations are generated, they need to be aggregated into a single `.pkl.gz` file. This file is used for computing metrics and visualizing results.
+
+#### Required Arguments:
+- `--eval-folder-path <path>`: Path to the directory containing the individual evaluation files.
+- `--output-file <path>`: Name of the final collected evaluation file.
+
+#### Example Usage:
+```bash
+python bin/collect_evaluations.py --eval-folder-path eval_files/eval_files/noma-1k --output-file eval_files/noma-1k_collected.pkl.gz
+```
+This collects all individual `.pkl.gz` evaluation files and stores the merged results in `noma-1k_collected.pkl.gz`.
+
+### Output Structure
+
+After running the evaluation pipeline, the output structure will be:
+```bash
+eval_files/  
+├── eval_files/noma-1k/ – Individual evaluation files (`.pkl.gz` per sample)  
+├── noma-1k_collected.pkl.gz – Merged evaluation results
+```
+
+#### Evaluation Details
+
+Each evaluation file contains:
+- **Generated CIF file** (tokenized and reconstructed)
+- **Atomic composition** (if `--add-composition` is used)
+- **Space group information** (if `--add-spacegroup` is used)
+- **XRD-based metrics** (computed if conditioning is used)
+- **Validity checks**:
+  - Formula consistency
+  - Bond length reasonableness
+  - Space group consistency
+  - Unit cell parameters
+- **Root Mean Square Deviation (RMSD)** from reference structure
+
+## CIF Generation Consistency Experiment
+
+The **CIF Generation Consistency Experiment** evaluates the reproducibility of generated crystal structures across multiple repetitions. The script takes a dataset of CIFs, generates multiple versions of each, and compares their structural and diffraction consistency.
+
+### Running the Consistency Experiment
+
+To perform the experiment, use the following command:
+
+python bin/generation_consistency.py --num_cifs 100 --num_reps 5 --batch_size 16 --qmin 0.0 --qmax 10.0 --qstep 0.01 --fwhm 0.05 --output_folder results/consistency_experiment --model_path deCIFer_model/ckpt.pt --dataset_path data/noma/1k/serialized/test.h5 --add_comp --add_spg
+
+#### Required Arguments:
+- `--num_cifs <int>`: Number of CIFs to process.
+- `--num_reps <int>`: Number of times to generate each CIF.
+- `--output_folder <path>`: Directory where results will be saved.
+- `--model_path <path>`: Path to the pretrained model checkpoint.
+- `--dataset_path <path>`: Path to the dataset in HDF5 format.
+
+#### Optional Arguments:
+- `--batch_size <int>`: Number of CIFs to generate in parallel (default: 16).
+- `--qmin <float>`: Minimum Q value for XRD computation (default: 0.0).
+- `--qmax <float>`: Maximum Q value for XRD computation (default: 10.0).
+- `--qstep <float>`: Step size for Q values (default: 0.01).
+- `--fwhm <float>`: Full-width at half-maximum for XRD broadening (default: 0.05).
+- `--noise <float>`: Optional noise level in XRD computation.
+- `--add_comp`: Include atomic composition in the conditioning prompt.
+- `--add_spg`: Include space group information in the conditioning prompt.
+
+### Output Structure
+
+After running the experiment, the results will be stored in the following structure:
+```bash
+results/consistency_experiment/
+├── CIF_NAME_1/ – Folder containing generated CIFs for the first structure  
+│   ├── CIF_NAME_1_0.cif – First repetition  
+│   ├── CIF_NAME_1_1.cif – Second repetition  
+│   ├── ...  
+├── CIF_NAME_2/ – Folder containing generated CIFs for the second structure  
+│   ├── CIF_NAME_2_0.cif  
+│   ├── CIF_NAME_2_1.cif 
+│   ├── ...  
+├── results.pkl – A pickled summary of all results
+```
+
+### Evaluation Metrics
+
+Each generated CIF is analyzed for structural and diffraction consistency. The following metrics are computed:
+
+- **Residual Weighted Profile (Rwp)**: Measures the difference between the experimental and generated XRD patterns.
+- **Root Mean Square Deviation (RMSD)**: Measures the structural deviation between generated and reference CIFs.
+- **Crystal System Consistency**: Checks if the generated structure belongs to the same crystal system as the reference.
+- **Space Group Consistency**: Compares the space group number of the generated structure with the original.
+- **Lattice Parameter Deviations**:
+  - `a`, `b`, `c`: Unit cell lengths.
+  - `α`, `β`, `γ`: Unit cell angles.
