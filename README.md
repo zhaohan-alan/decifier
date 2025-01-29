@@ -46,7 +46,7 @@ python bin/prepare_dataset.py --data-dir data/noma/ --name noma-1k --debug-max 1
   - `--data-dir <path>`: Path to the directory containing raw CIF and PXRD data.
   - `--name <str>`: Identifier for the dataset (used to create an organized structure).
   - `--debug-max <int>`: Limits processing to the first `N` samples (useful for debugging).
-  - `--raw-from-gzip`: If raw CIFs are stored in a `.gz` archive, extract them before processing.
+  - `--raw-from-gzip`: If raw CIFs are stored in a `.gz` archive, extract them before processing. (This is the case for the NOMA dataset, depeding on how the data is downloaded)
 
 - **Processing steps**:
   - `--preprocess`: Parses and cleans CIF files.
@@ -57,7 +57,7 @@ python bin/prepare_dataset.py --data-dir data/noma/ --name noma-1k --debug-max 1
 
 - **Processing options**:
   - `--num-workers <int>`: Number of parallel processes to use (default: all available CPUs - 1).
-  - `--include-occupancy-structures`: Include structures with atomic site occupancies below 1.
+  - `--include-occupancy-structures`: Include structures with atomic site occupancies below 1. (False for deCIFer and U-deCIFer)
   - `--ignore-data-split`: Disable automatic train/val/test splitting and serialize all data into `test.h5`.
 
 ### Output Directory Structure
@@ -106,8 +106,9 @@ init_from: "scratch"  # Options: 'scratch' (new training), 'resume' (continue tr
 n_layer: 8
 n_head: 8
 n_embd: 512
-dropout: 0.1
+dropout: 0.0
 boundary_masking: True
+condition: True
 
 # Training parameters
 batch_size: 64
@@ -130,10 +131,7 @@ Modify this file as needed to adjust the training settings.
 After training starts, the model and logs will be saved in the output directory:
 ```bash
 models/deCIFer/
-├── ckpt.pt – Latest model checkpoint
-├── best_model.pt – Best-performing model checkpoint
-├── train_log.txt – Log file containing training progress
-├── config.yaml – Copy of the training configuration
+├── ckpt.pt – Latest model checkpoint including model dictionary, loss metrics, etc.
 ```
 ### Monitoring Training
 During training, logs will be printed to the console, showing:
@@ -224,10 +222,8 @@ eval_files/
 #### Evaluation Details
 
 Each evaluation file contains:
-- **Generated CIF file** (tokenized and reconstructed)
-- **Atomic composition** (if `--add-composition` is used)
-- **Space group information** (if `--add-spacegroup` is used)
-- **XRD-based metrics** (computed if conditioning is used)
+- **Generated CIF file**
+- **PXRD-based metrics**
 - **Validity checks**:
   - Formula consistency
   - Bond length reasonableness
@@ -242,8 +238,9 @@ The **CIF Generation Consistency Experiment** evaluates the reproducibility of g
 ### Running the Consistency Experiment
 
 To perform the experiment, use the following command:
-
+```bash
 python bin/generation_consistency.py --num_cifs 100 --num_reps 5 --batch_size 16 --qmin 0.0 --qmax 10.0 --qstep 0.01 --fwhm 0.05 --output_folder results/consistency_experiment --model_path deCIFer_model/ckpt.pt --dataset_path data/noma/1k/serialized/test.h5 --add_comp --add_spg
+```
 
 #### Required Arguments:
 - `--num_cifs <int>`: Number of CIFs to process.
