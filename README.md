@@ -7,11 +7,10 @@ deCIFer is an autoregressive language model for crystal structure prediction (CS
 ## Table of Contents
 1. [Setup](#setup)
 2. [Data Preparation](#data-preparation)
-3. [Training from Scratch](#training-from-scratch)
-4. [Resuming Training](#resuming-training)
-5. [Evaluation Pipeline](#evaluation)
-6. [CIF Generation Consistency Experiment](#cif-generation-consitency-experiment)
-7. [License](#license)
+3. [Training from Scratch](#training)
+4. [Evaluation Pipeline](#evaluation)
+5. [CIF Generation Consistency Experiment](#cif-generation-consistency-experiment)
+6. [License](#license)
 
 ## Setup
 We recommend using **Python 3.9**, as deCIFer was developed and tested with this version. Other versions may work but have not been verified.
@@ -72,6 +71,92 @@ data/noma-1k/
 ├── serialized/ – Final dataset (train/val/test) stored as HDF5 files
 ├── metadata.json – Stores some metadata
 ```
+
+## Training
+### Training From Scratch
+
+To train deCIFer from scratch, you need to specify the training configuration and dataset. The model will initialize randomly and train from the beginning.
+
+#### Required Arguments:
+- `--config <path>`: Path to a YAML configuration file specifying training parameters.
+
+#### Example Usage:
+```bash
+python bin/train.py --config config/train.yaml
+```
+This initializes a new model and starts training using the settings specified in `train.yaml`.
+
+### Resuming Training
+
+If training was previously interrupted or stopped, you can resume from a saved checkpoint. This allows training to continue from where it left off.
+#### Required Arguments:
+- `--config <path>`: Path to the same YAML configuration file used during training.
+- Ensure that the `init_from` option in the YAML file is set to `"resume"`.
+
+### Configuration File (`train.yaml`)
+
+The training parameters are stored in a YAML file. Below is an example configuration:
+
+```yaml
+out_dir: "models/deCIFer"  # Directory where checkpoints and logs will be saved
+dataset: "data/noma/1k/serialized/"  # Path to the dataset
+init_from: "scratch"  # Options: 'scratch' (new training), 'resume' (continue training)
+
+# Model parameters
+n_layer: 8
+n_head: 8
+n_embd: 512
+dropout: 0.1
+boundary_masking: True
+
+# Training parameters
+batch_size: 64
+gradient_accumulation_steps: 40
+max_iters: 50000
+learning_rate: 6e-4
+weight_decay: 0.1
+warmup_iters: 2000
+early_stopping_patience: 50
+
+# Evaluation settings
+eval_interval: 250
+eval_iters_train: 200
+eval_iters_val: 200
+validate: True
+```
+Modify this file as needed to adjust the training settings.
+
+### Output Structure
+After training starts, the model and logs will be saved in the output directory:
+```bash
+models/deCIFer/
+├── ckpt.pt – Latest model checkpoint
+├── best_model.pt – Best-performing model checkpoint
+├── train_log.txt – Log file containing training progress
+├── config.yaml – Copy of the training configuration
+```
+### Monitoring Training
+During training, logs will be printed to the console, showing:
+- Loss values
+- Evaluation results on the validation set
+- Learning rate adjustments
+- Checkpoint saving status
+  
+Example output:
+```bash
+iter 1000: loss 0.4123, time 58.2ms
+step 1000: train loss 0.4123, val loss 0.4289
+saving checkpoint to models/deCIFer/...
+```
+
+### Early Stopping
+If validation loss does not improve for a set number of evaluations (early_stopping_patience), training will stop automatically.
+
+#### Example Usage:
+```bash
+python bin/train.py --config config/train.yaml
+```
+The script will automatically load the latest checkpoint from the output directory specified in the configuration file and continue training.
 
 ## Evaluation Pipeline
 The evaluation process consists of two main steps: **generating evaluations** for model predictions and **collecting** them into a single file for visualization and analysis.
@@ -204,3 +289,6 @@ Each generated CIF is analyzed for structural and diffraction consistency. The f
 - **Lattice Parameter Deviations**:
   - `a`, `b`, `c`: Unit cell lengths.
   - `α`, `β`, `γ`: Unit cell angles.
+
+## License
+deCIFer is released under the **MIT License**.
