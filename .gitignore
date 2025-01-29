@@ -12,6 +12,9 @@ experiments/
 experiments_old/
 cl_experiments/
 
+# Ignore notebook for testing
+notebook_testing/
+
 # Ignore egg folders
 **/*.egg-info/
 
