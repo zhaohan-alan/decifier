@@ -1,5 +1,0 @@
-output_folder: testing_chili100k_train
-debug_max: null
-
-eval_folder_dict:
-  XRD composition 0pctnoise 5pct FWHM CHILI: experiments/conditioned_mlp_augmentation/eval_files/composition_0pctnoise_5pctfwhm_chili100k_train

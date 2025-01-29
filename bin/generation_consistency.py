@@ -7,7 +7,6 @@ import warnings
 from collections import defaultdict
 
 import numpy as np
-import pandas as pd
 import torch
 
 from pymatgen.analysis.structure_matcher import StructureMatcher
@@ -183,7 +182,6 @@ def process_cif(
 
     return results
 
-
 def process_multiple_cifs(
     dataset_iter,
     model,
@@ -250,14 +248,6 @@ def save_structures(results, folder):
 
 
 def main():
-    """
-    Main entry point:
-    1. Parse arguments
-    2. Load model & dataset
-    3. Process Y CIFs, each X times
-    4. Save structures & stats
-    """
-
     parser = argparse.ArgumentParser(description="Generate CIFs from a pretrained model.")
     parser.add_argument("--num_cifs", type=int, required=True, help="Number of CIFs to process.")
     parser.add_argument("--num_reps", type=int, required=True, help="Number of times to generate each CIF.")
@@ -292,28 +282,18 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # ---------------------------
-    # 1. Load model
-    # ---------------------------
     print(f"Loading model from: {model_path}")
     model = load_model_from_checkpoint(model_path, device)
     model.eval()
 
     # Tokenizer references
-    encode_fn = Tokenizer().encode
     decode_fn = Tokenizer().decode
     padding_id = Tokenizer().padding_id
 
-    # ---------------------------
-    # 2. Load dataset
-    # ---------------------------
     print(f"Loading dataset from: {dataset_path}")
     dataset = DeciferDataset(dataset_path, ["cif_name", "cif_string", "cif_tokens", "xrd.q", "xrd.iq", "spacegroup"])
     dataset_iter = iter(dataset)
 
-    # ---------------------------
-    # 3. Process CIFs
-    # ---------------------------
     print(f"Processing {num_cifs} CIF(s), generating each {num_reps} time(s)...")
     matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
 
@@ -335,13 +315,6 @@ def main():
         matcher=matcher,
     )
 
-    # ---------------------------
-    # 4. Save generated CIFs
-    # ---------------------------
-    # print("Saving generated CIF files...")
-    # save_structures(results, output_folder)
-    #
-    # # Also save as pickle (faster load in notebooks)
     os.makedirs(output_folder, exist_ok=True)
     pkl_path = os.path.join(output_folder, "results.pkl")
     print(f"Saving pickled results to {pkl_path}...")
@@ -349,7 +322,6 @@ def main():
          pickle.dump(results, f)
 
     print("Done!")
-
 
 if __name__ == "__main__":
     main()
