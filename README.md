@@ -1,5 +1,4 @@
 # deCIFer: Crystal Structure Prediction from Powder Diffraction Data
-*Anonymized version*
 
 **Shortened Abstract**  
 deCIFer is an autoregressive language model for crystal structure prediction (CSP) from powder X-ray diffraction (PXRD) data, generating Crystallographic Information Files (CIFs) directly from diffraction patterns. Trained on nearly 2.3 million crystal structures, it is validated on diverse PXRD datasets for inorganic systems. Evaluations using residual weighted profile (Rwp) and Wasserstein distance show improved predictions when conditioned on diffraction data. deCIFer achieves a 94% match rate on unseen data, bridging experimental diffraction with computational CSP for materials discovery.
