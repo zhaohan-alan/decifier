@@ -1,5 +1,7 @@
 [![Static Badge](https://img.shields.io/badge/arXiv-2502.02189-brightgreen?style=flat)](https://arxiv.org/abs/2502.02189)
 
+<img src="deCIFer_logo.png" alt="logo" height="200"/>
+
 # deCIFer: Crystal Structure Prediction from Powder Diffraction Data
 
 ## Table of Contents
