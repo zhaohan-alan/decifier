@@ -1,9 +1,9 @@
-# CONFIG YAML
+# CONFIG YAML - 快速版本用于测试
 
 out_dir: 'deCIFer_model' # output directory for model checkpoint
-eval_interval: 250  # how often to evaluate against the validation set
-eval_iters_train: 200 # how many iterations for evaluating training loss
-eval_iters_val: 200 # how many iterations for evaluating validation loss
+eval_interval: 50  # 减少评估间隔
+eval_iters_train: 50 # 减少评估迭代次数
+eval_iters_val: 50 # 减少评估迭代次数
 log_interval: 1  # how often to print to the console (1 = every iteration)
 init_from: 'scratch' # intialise from ["scratch", "resume"]
 
@@ -15,24 +15,24 @@ always_save_checkpoint: True # always save checkpoint
 validate: True # validate with a validation set
 
 dataset: 'data/noma/noma-1k' # path to dataset, can be to subset or full dataset
-batch_size: 32 # batch size
-block_size: 3076 # context window
+batch_size: 8 # 减少批次大小
+block_size: 1024 # 减少块大小
+gradient_accumulation_steps: 8  # 减少梯度累积步数
 
-n_layer: 8 # n_layers
-n_head: 8 # n_head
-n_embd: 512 # n_embed
+n_layer: 4 # 减少层数
+n_head: 4 # 减少注意力头数
+n_embd: 256 # 减少嵌入维度
 dropout: 0.0 # dropout
 
 learning_rate: 1e-3 # learning rate (AdamW)
-gradient_accumulation_steps: 40  # used to simulate larger batch sizes
-max_iters: 50_000 # max number of epochs
-lr_decay_iters: 50_000 # learning reate decay
+max_iters: 1000 # 减少最大迭代次数用于测试
+lr_decay_iters: 1000 # learning reate decay
 min_lr: 1e-6 # min learning rate
 beta2: 0.99 # beta2
 
-warmup_iters: 100 # warmup iterations
+warmup_iters: 10 # 减少warmup迭代次数
 
-early_stopping_patience: 100 # early stopping patience (epochs)
+early_stopping_patience: 20 # 减少早停耐心
 
 fwhm_range_min: 0.001 # min. for the FWHM range
 fwhm_range_max: 0.10 # max. for the FWHM range
@@ -40,4 +40,4 @@ noise_range_min: 0.001 # min. for the uniform sampling of std. for additive nois
 noise_range_max: 0.05 # max. for the uniform sampling of std. for additive noise
 
 condition: True # Enable conditioning (deCIFer)
-boundary_masking: True # Enable boundary masking, to avoid cross contamination between CIFs.
+boundary_masking: True # Enable boundary masking, to avoid cross contamination between CIFs. 
