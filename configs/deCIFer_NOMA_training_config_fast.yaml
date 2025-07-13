@@ -14,7 +14,7 @@ always_save_checkpoint: True # always save checkpoint
 
 validate: True # validate with a validation set
 
-dataset: 'data/noma/noma-1k' # path to dataset, can be to subset or full dataset
+dataset: 'data/noma/noma-10k' # path to dataset, can be to subset or full dataset
 batch_size: 8 # 减少批次大小
 block_size: 1024 # 减少块大小
 gradient_accumulation_steps: 8  # 减少梯度累积步数
